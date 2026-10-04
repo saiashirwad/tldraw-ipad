@@ -8,7 +8,7 @@ import { promisify } from 'node:util'
 import { chromium, type Page } from 'playwright'
 import { startServer } from '../server'
 import type { AskInput, AskRunner } from '../pi'
-import { buildAskPrompt, MAX_ANSWER_CHARS } from '../src/ask-prompts'
+import { MAX_ANSWER_CHARS } from '../src/ask-prompts'
 import { createRun } from '../scripts/verification/session'
 
 const exec = promisify(execFile)
@@ -96,119 +96,10 @@ test('shared canvas: agent → drawing → capture → backup → restart', { ti
       assert.equal(await human.getByRole('button', { name: 'Eraser', exact: true }).count(), 0)
     })
 
-    await t.test('Ask pi puts a small editable answer beside the ink without moving a camera that already fits', async () => {
+    await t.test('the canvas keeps automatic answers headless', async () => {
+      assert.equal(await human.getByRole('button', { name: 'Ask pi' }).count(), 0)
+      assert.equal(await human.getByRole('button', { name: 'Attach a question' }).count(), 0)
       assert.equal(await second.getByRole('button', { name: 'Ask pi' }).count(), 0)
-      const camera = await human.evaluate(() => window.canvas.editor.getCamera())
-      await human.getByRole('button', { name: 'Ask pi' }).click()
-      const answered = () => human.waitForFunction(() => {
-        const shape = window.canvas.editor.getCurrentPageShapes().find((option) => option.meta?.agentAnswer)
-        return !!shape && JSON.stringify((shape.props as { richText?: unknown }).richText).includes('happy cat')
-      })
-      await answered()
-      await human.waitForFunction(() => {
-        const shape = window.canvas.editor.getCurrentPageShapes().find((option) => option.meta?.agentAnswer)
-        const answer = shape && window.canvas.editor.getShapePageBounds(shape.id)
-        return !!answer && window.canvas.editor.getViewportPageBounds().includes(answer)
-      })
-      const answer: any = await human.evaluate(() => JSON.parse(JSON.stringify(
-        window.canvas.editor.getCurrentPageShapes().find((option) => option.meta?.agentAnswer))))
-      assert.equal(answer.type, 'text')
-      assert.equal(answer.props.autoSize, false)
-      assert.equal(answer.props.size, 's')
-      const ink: any = await human.evaluate(() => {
-        const shape = window.canvas.editor.getCurrentPageShapes().find((s) => s.type === 'draw')!
-        return window.canvas.editor.getShapePageBounds(shape)
-      })
-      assert(Math.abs(answer.x - ink.x - ink.w - 24) < 1, 'expected the reply just to the right of the handwriting')
-      assert(Math.abs(answer.y - ink.y) < 1, 'expected alignment with the handwriting, not the viewport bottom')
-      assert.deepEqual(await human.evaluate(() => window.canvas.editor.getCamera()), camera)
-      assert.equal(asked.length, 1)
-      assert.equal(asked[0].image?.mimeType, 'image/png')
-      assert(asked[0].image?.data.startsWith('iVBOR'), 'expected a PNG screenshot of the canvas')
-      assert.equal(asked[0].prompt, buildAskPrompt(''))
-      await human.screenshot({ path: resolve(run.dir, 'ask-near-ink.png') })
-      await human.getByRole('button', { name: 'Undo', exact: true }).click()
-      assert.equal(await human.evaluate(() => window.canvas.editor.getCurrentPageShapes().filter((s) => s.meta.agentAnswer).length), 0)
-      assert.equal(await human.evaluate(() => window.canvas.editor.getCurrentPageShapes().filter((s) => s.type === 'draw').length), 1)
-      await human.getByRole('button', { name: 'Redo', exact: true }).click()
-      await answered()
-    })
-
-    await t.test('custom prompts keep typed questions brief and avoid covering previous replies', async () => {
-      await human.getByRole('button', { name: 'Attach a question' }).click()
-      await human.getByRole('combobox', { name: 'Reply style' }).selectOption('hint')
-      await human.getByRole('textbox', { name: 'Question for pi' }).fill('What colour is it?')
-      await human.getByRole('button', { name: 'Ask pi' }).click()
-      await human.waitForFunction(() => window.canvas.editor.getCurrentPageShapes()
-        .filter((shape) => shape.meta?.agentAnswer).length === 2)
-      await human.getByRole('button', { name: 'Ask pi' }).waitFor()
-      assert.equal(asked[1].prompt, buildAskPrompt('What colour is it?', 'hint'))
-      const answers: any[] = await human.evaluate(() => JSON.parse(JSON.stringify(
-        window.canvas.editor.getCurrentPageShapes().filter((shape) => shape.meta?.agentAnswer))))
-      const overlap = await human.evaluate(() => {
-        const replies = window.canvas.editor.getCurrentPageShapes().filter((s) => s.meta.agentAnswer)
-        const a = window.canvas.editor.getShapePageBounds(replies[0])!
-        const b = window.canvas.editor.getShapePageBounds(replies[1])!
-        return a.collides(b)
-      })
-      assert.equal(overlap, false, 'replies must not cover each other')
-      assert(answers[1].y < 768, 'a follow-up should stay near the drawing')
-    })
-
-    await t.test('Stop ends the stream and keeps the partial answer', async () => {
-      await human.getByRole('textbox', { name: 'Question for pi' }).fill('slow')
-      await human.getByRole('button', { name: 'Ask pi' }).click()
-      await human.getByRole('button', { name: 'Stop pi' }).waitFor()
-      await wait(150)
-      await human.mouse.move(200, 550)
-      await human.mouse.down()
-      await human.mouse.move(260, 560, { steps: 5 })
-      await human.mouse.up()
-      const inkCount = await human.evaluate(() => window.canvas.editor.getCurrentPageShapes().filter((s) => s.type === 'draw').length)
-      await human.getByRole('button', { name: 'Stop pi' }).click()
-      await human.getByRole('button', { name: 'Ask pi' }).waitFor()
-      assert.equal(await human.evaluate(() => window.canvas.editor.getCurrentPageShapes()
-        .filter((shape) => shape.meta?.agentAnswer).length), 3)
-      assert.equal((await status()).view.source, 'browser')
-      const partial = await human.evaluate(() => {
-        const shape = window.canvas.editor.getCurrentPageShapes().filter((s) => s.meta.agentAnswer).at(-1)!
-        return { id: shape.id as string, text: window.canvas.editor.getShapeUtil(shape).getText(shape) }
-      })
-      await human.getByRole('button', { name: 'Undo', exact: true }).click()
-      assert.equal(await human.evaluate((id) => !!window.canvas.editor.getShape(id as any), partial.id), false)
-      assert.equal(await human.evaluate(() => window.canvas.editor.getCurrentPageShapes().filter((s) => s.type === 'draw').length), inkCount)
-      await human.getByRole('button', { name: 'Redo', exact: true }).click()
-      assert.equal(await human.evaluate((id) => {
-        const shape = window.canvas.editor.getShape(id as any)!
-        return window.canvas.editor.getShapeUtil(shape).getText(shape)
-      }, partial.id), partial.text)
-    })
-
-    await t.test('verbose replies are capped and a fresh zoomed-in drawing ignores distant old answers', async () => {
-      await human.getByRole('combobox', { name: 'Reply style' }).selectOption('check')
-      await human.getByRole('textbox', { name: 'Question for pi' }).fill('verbose')
-      await human.evaluate(() => { window.canvas.editor.setCamera({ x: -3000, y: -3000, z: 4 }) })
-      await human.mouse.move(100, 200)
-      await human.mouse.down()
-      await human.mouse.move(240, 230, { steps: 5 })
-      await human.mouse.up()
-      await human.waitForTimeout(600)
-      await human.getByRole('button', { name: 'Ask pi' }).click()
-      await human.getByRole('button', { name: 'Stop pi' }).waitFor()
-      await human.getByRole('button', { name: 'Ask pi' }).waitFor()
-      const note = await human.evaluate(() => {
-        const shape = window.canvas.editor.getCurrentPageShapes().filter((s) => s.meta.agentAnswer).at(-1)!
-        const bounds = window.canvas.editor.getShapePageBounds(shape)!
-        return { text: window.canvas.editor.getShapeUtil(shape).getText(shape), bounds, scale: (shape.props as { scale: number }).scale,
-          visible: window.canvas.editor.getViewportPageBounds().includes(bounds) }
-      })
-      assert(note.text!.length <= MAX_ANSWER_CHARS)
-      assert(note.text!.endsWith('…'))
-      assert.equal(note.scale, .25)
-      assert(note.bounds.x > 3000 && note.bounds.x < 3100)
-      assert(note.visible, 'the completed reply must remain visible')
-      assert.equal(asked.at(-1)!.prompt, buildAskPrompt('verbose', 'check'))
-      await human.screenshot({ path: resolve(run.dir, 'ask-zoomed.png') })
     })
 
     await t.test('captures the human viewport with shapes and ink, without controls', async () => {

@@ -12,11 +12,11 @@ export function markerIsCurrent(editor: Editor, marker: QuestionMarker) {
 }
 
 /** One SDK undo restores the exact question-mark strokes and removes the complete answer. */
-export function replaceQuestionMarker(editor: Editor, marker: QuestionMarker, text: string) {
+export function replaceQuestionMarker(editor: Editor, marker: QuestionMarker, text: string, id = createShapeId()) {
   if (!text.trim() || !markerIsCurrent(editor, marker)) return null
   const zoom = editor.getZoomLevel()
-  const scale = Math.max(18, Math.min(40, marker.bounds.h * zoom * .75)) / (18 * zoom)
-  const id = createShapeId()
+  const scale = 20 / (18 * zoom)
+  const width = Math.max(160, Math.min(320, (editor.getViewportPageBounds().maxX - marker.bounds.x) * zoom - 16))
   editor.markHistoryStoppingPoint('answer-question-mark')
   editor.run(() => {
     editor.deleteShapes(marker.ink.map((shape) => shape.id))
@@ -24,8 +24,17 @@ export function replaceQuestionMarker(editor: Editor, marker: QuestionMarker, te
       id, type: 'text', x: marker.bounds.x, y: marker.bounds.y,
       meta: { agentAnswer: true, questionMarkInk: JSON.parse(JSON.stringify(marker.ink)) },
       props: { richText: toRichText(text.trim()), size: 's', font: 'sans', color: 'black', scale,
-        autoSize: false, w: 240 / (scale * zoom) },
+        autoSize: false, w: width / (scale * zoom) },
     }])
+    const bounds = editor.getShapePageBounds(id)!.clone()
+    const initialY = bounds.y
+    const gap = 12 / zoom
+    const obstacles = editor.getCurrentPageShapes().filter((shape) => shape.id !== id && (shape.type === 'draw' || shape.type === 'text'))
+      .map((shape) => editor.getShapePageBounds(shape)!).sort((a, b) => a.y - b.y)
+    for (const other of obstacles) {
+      if (bounds.clone().expandBy(gap).collides(other)) bounds.y = other.maxY + gap
+    }
+    if (bounds.y !== initialY) editor.updateShapes([{ id, type: 'text', y: marker.bounds.y + bounds.y - initialY }])
   })
   editor.markHistoryStoppingPoint('answer-question-mark-complete')
   return id
@@ -62,9 +71,8 @@ export function installQuestionTrigger(editor: Editor, options: {
     timer = undefined
     if (disposed || pointers.size || pens.size || active || !options.enabled() || document.visibilityState !== 'visible') return
     if (options.busy()) { timer = setTimeout(() => { void inspect() }, 250); return }
-    const now = Date.now()
     for (const [id, entry] of recent) {
-      if (now - entry.at > 15000 || !editor.getShape(entry.shape.id)) { recent.delete(id); changed.delete(id) }
+      if (!editor.getShape(entry.shape.id)) { recent.delete(id); changed.delete(id) }
     }
     const entries = [...recent.values()].filter(({ shape }) => shape.props.isComplete && !shape.isLocked &&
       shape.parentId === editor.getCurrentPageId() && editor.getViewportPageBounds().collides(editor.getShapePageBounds(shape)!))
@@ -139,10 +147,10 @@ export function installQuestionTrigger(editor: Editor, options: {
   const beforeEvent = (event: TLEventInfo) => {
     drawingEvent = false
     if (event.type !== 'pointer') return
+    if (editor.getInstanceState().isPenMode && !event.isPen) return
     if (event.name === 'pointer_down') {
       interrupt('input')
-      if (event.button === 0 && editor.getCurrentToolId() === 'draw' && !editor.getIsReadonly() &&
-        (!editor.getInstanceState().isPenMode || event.isPen)) pens.add(event.pointerId)
+      if (event.button === 0 && editor.getCurrentToolId() === 'draw' && !editor.getIsReadonly()) pens.add(event.pointerId)
     }
     drawingEvent = pens.has(event.pointerId) && editor.getCurrentToolId() === 'draw' &&
       !editor.getIsReadonly() && !editor.inputs.getIsPanning() && !editor.inputs.getIsPinching() &&
@@ -150,8 +158,7 @@ export function installQuestionTrigger(editor: Editor, options: {
   }
   const afterEvent = (event: TLEventInfo) => {
     drawingEvent = false
-    if (event.type === 'pointer' && event.name === 'pointer_up') {
-      pens.delete(event.pointerId)
+    if (event.type === 'pointer' && event.name === 'pointer_up' && pens.delete(event.pointerId)) {
       liftedAt = Date.now()
       schedule()
     } else if (event.type === 'misc' && event.name === 'cancel') {
@@ -164,6 +171,7 @@ export function installQuestionTrigger(editor: Editor, options: {
 
   const down = (event: PointerEvent) => {
     if ((event.target as Element | null)?.closest('.tools, .history, .tlui')) return
+    if (event.pointerType === 'touch' && editor.getInstanceState().isPenMode) return
     pointers.add(event.pointerId)
     interrupt('input')
   }

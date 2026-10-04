@@ -1,17 +1,13 @@
-# Ask pi
+# Automatic question answers
 
-## Sub-features
+Write a separate hook and dot beside a question and lift the Pencil. Palm contact does not delay or cancel the answer. After an idle pause, recognition confirms the marker and a completed answer replaces it in one SDK undo operation. New writing cancels work; ambiguous glyphs and failed requests preserve ink. There are no visible ask controls.
 
-Streaming, brief prompts, placement, Stop, one-answer undo, recognition, and preserved ink on cancellation/rejection.
+Run `pnpm verify --scenario ask` for the scripted LAN workflow. Run `pnpm test:fast` for prompts, geometry, recognition, and scripted RPC. Run `pnpm test:browser --match standalone` for real Pi Durable JSONL persistence behind a scripted native bridge, no Mac API requests, undo after reload, and provider cancellation.
 
-## How to get to it (user POV)
+The standalone app preserves completed conversation and ready-answer state. On reopen it cancels interrupted recognition or answering while retaining the marker. Applied answers never resurrect after undo. These prototype recovery limits are intentional.
 
-Tap Ask pi or write a separate hook and dot with automatic asking enabled.
+Run `node scripts/standalone-ipad.mjs --scenario render` for bundled device rendering and `--scenario question --provision --env-file .env` for the real DeepSeek recognition and answer loop with SDK pen events. It asserts answer replacement and exact Undo. `--scenario questions` checks arithmetic, a monad definition, and the meaning of life consecutively, with Undo/Redo and no overlapping replies. Native browser coverage verifies fresh visual context after reload, updated persisted instructions, model-only target marking, and structured question/answer parsing. `--scenario live` aliases question. Physical handwriting recognition still requires human input. Normal browser tests use scripted provider responses.
 
-## Driving it with Playwright
+Run `node scripts/standalone-ipad.mjs --scenario stability` for canvas visibility at 8 and 95 seconds. It records license state and rejects a hidden editor. Native Debug installs must use `pnpm build:ipad`; production bundles at the custom native URL require a valid license.
 
-Run `pnpm verify --scenario ask` for the streamed-answer workflow. Run `pnpm test:fast` for prompts, geometry, recognition, and scripted RPC. Run `pnpm test:browser` for local input, cancellation, rejection, exact undo, and remote non-trigger regressions.
-
-## Gotchas
-
-Both model runners are scripted. These checks prove integration behavior, not provider quality. Use `pnpm ipad:dev --scenario ask --live-model` only for an explicitly requested provider check.
+The live probe checks the model's actual text against the rendered image. After a passing run, check native persistence with `--scenario render --skip-install --board BOARD_ID --expect-existing`, using its reported board ID. The check requires the known shape to exist before the scenario creates any content.

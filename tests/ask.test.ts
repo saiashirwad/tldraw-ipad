@@ -6,73 +6,38 @@ import { resolve } from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { CANVAS_SYSTEM_PROMPT, createPiAgent, limitAnswer } from '../pi'
-import { ASK_PRESETS, buildAskPrompt, MAX_ANSWER_CHARS } from '../src/ask-prompts'
-import { answerAnchor, answerSpot, overlaps, type CanvasItem, type Rect } from '../src/ask-placement'
+import { buildAskPrompt, MAX_ANSWER_CHARS, QUESTION_ANSWER_PROMPT, parseQuestionAnswer } from '../src/ask-prompts'
 
-const view = { x: 0, y: 0, w: 1024, h: 768 }
-const ink = { x: 170, y: 370, w: 115, h: 30 }
-const item = (bounds: Rect, options: Partial<CanvasItem> = {}): CanvasItem => ({ bounds, ink: true, answer: false, selected: false, ...options })
 const collect = async (deltas: AsyncIterable<string>) => {
   let text = ''
   for await (const delta of deltas) text += delta
   return text
 }
 
-// Pure geometry checks don't require a browser or touch the shared board.
-test('answer anchor uses visible handwriting or selection, never old replies', () => {
-  const items = [item(ink), item({ x: 100, y: 100, w: 600, h: 100 }, { ink: false }),
-    item({ x: 0, y: 10000, w: 500, h: 100 }, { answer: true })]
-  assert.deepEqual(answerAnchor(items, view, 24), ink)
-  items[1].selected = true
-  assert.deepEqual(answerAnchor(items, view, 24), items[1].bounds)
-  assert.deepEqual(answerAnchor([item(ink, { answer: true })], view, 24), { x: 24, y: 24, w: 0, h: 0 })
-})
-
-test('partial shapes anchor to the visible portion, and diagrams work without ink', () => {
-  const diagram = item({ x: -100, y: 50, w: 250, h: 200 }, { ink: false })
-  assert.deepEqual(answerAnchor([diagram], view, 24), { x: 0, y: 50, w: 150, h: 200 })
-})
-
-test('reply hugs the handwriting, not the viewport or distant answers', () => {
-  const spot = answerSpot(ink, [ink, { x: 0, y: 10000, w: 640, h: 400 }], view, 360, 144, 24)
-  assert.deepEqual(spot, { x: 309, y: 370, w: 360, h: 144 })
-  assert(!overlaps(spot, ink))
-})
-
-test('a crowded right side uses another nearby slot; growing text does not cover ink', () => {
-  const obstacles = [ink, { x: 300, y: 340, w: 650, h: 200 }, { x: 100, y: 540, w: 800, h: 120 }]
-  for (const height of [144, 350]) {
-    const spot = answerSpot(ink, obstacles, view, 300, height, 24)
-    assert(obstacles.every((b) => !overlaps(spot, b, 12)))
-    assert(spot.y < 370, 'expected the clear space above the writing')
-  }
-})
-
-test('zoomed-in ink and writing at the viewport edge still get nearby readable space', () => {
-  const zoomedView = { x: 3000, y: 3000, w: 256, h: 192 }
-  const zoomedInk = { x: 3025, y: 3050, w: 35, h: 8 }
-  const spot = answerSpot(zoomedInk, [zoomedInk, { x: 0, y: 10000, w: 600, h: 400 }], zoomedView, 90, 36, 6)
-  assert.equal(spot.x, 3066)
-  const edge = { x: 980, y: 300, w: 40, h: 60 }
-  const edgeSpot = answerSpot(edge, [edge], view, 300, 144, 24)
-  assert.equal(edgeSpot.x, 656, 'left side is nearer than going offscreen to the right')
-})
-
-test('every custom prompt includes brevity and preserves a typed question', () => {
-  for (const mode of Object.keys(ASK_PRESETS)) {
-    const prompt = buildAskPrompt('  Why is this wrong?  ', mode)
-    assert.match(prompt, /My question: Why is this wrong\?/)
-    assert.match(prompt, /one short sentence at most/)
-    assert.match(prompt, /at most 25 words/)
-    assert.match(prompt, new RegExp(`under ${MAX_ANSWER_CHARS} characters`))
-    assert.match(prompt, /Respond to their meaning, not their appearance/)
-    assert.match(prompt, /Never critique letter shapes/)
-  }
-  assert.match(buildAskPrompt('', 'hint'), /Do not reveal the full solution/)
-  assert.match(buildAskPrompt('', 'next'), /only the single next step/)
-  assert.match(buildAskPrompt('', 'check'), /most important mistake/)
-  assert.equal(buildAskPrompt(undefined, 'toString'), buildAskPrompt(''))
+test('custom prompts include brevity and preserve a typed question', () => {
+  const prompt = buildAskPrompt('  Why is this wrong?  ')
+  assert.match(prompt, /My question: Why is this wrong\?/)
+  assert.match(prompt, /1–3 short sentences/)
+  assert.match(prompt, /at most 60 words/)
+  assert.match(prompt, new RegExp(`under ${MAX_ANSWER_CHARS} characters`))
+  assert.match(prompt, /Respond to their meaning, not their appearance/)
+  assert.match(prompt, /Never critique letter shapes/)
+  assert.equal(buildAskPrompt(undefined), buildAskPrompt(''))
   assert.match(CANVAS_SYSTEM_PROMPT, /not a chat essay/)
+  assert.match(QUESTION_ANSWER_PROMPT, /red box marks the handwritten question mark/)
+  assert.match(QUESTION_ANSWER_PROMPT, /Use only this current image/)
+  assert.doesNotMatch(CANVAS_SYSTEM_PROMPT, /one short sentence at most|2–12 words|at most 25 words/)
+})
+
+test('structured question answers require a transcription and render only answer text', () => {
+  const reply = JSON.stringify({ question: 'What is a monad?', answer: '  A monad composes computations while carrying a context.  ' })
+  assert.equal(parseQuestionAnswer(reply), 'A monad composes computations while carrying a context.')
+  assert.equal(parseQuestionAnswer(`\`\`\`json\n${reply}\n\`\`\``), parseQuestionAnswer(reply))
+  for (const invalid of ['2', '{', '{}', '{"question":"","answer":"2"}', '{"question":"What?","answer":" "}', '{"question":1,"answer":"2"}']) {
+    assert.throws(() => parseQuestionAnswer(invalid))
+  }
+  const long = 'A useful explanation. '.repeat(30)
+  assert.equal(parseQuestionAnswer(JSON.stringify({ question: 'Explain this.', answer: long })), long.trim(), 'parse the complete JSON before applying the answer limit')
 })
 
 test('default replies answer the message instead of grading the handwriting', () => {
@@ -84,7 +49,6 @@ test('default replies answer the message instead of grading the handwriting', ()
   assert.match(prompt, /Do not pad a simple answer with coaching/)
   assert.match(CANVAS_SYSTEM_PROMPT, /"1 \+ 1 =" → Reply: "2"/)
   assert.match(CANVAS_SYSTEM_PROMPT, /"what's up\?" → Reply: "Hey! What are we working on\?"/)
-  assert.match(buildAskPrompt('', 'check'), /not the handwriting/)
 })
 
 test('short replies stream unchanged; excessive output closes the producer', async () => {

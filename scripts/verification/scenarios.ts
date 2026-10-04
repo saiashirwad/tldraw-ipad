@@ -119,9 +119,17 @@ export const scenarios: Record<string, Scenario> = {
     })
   },
   async ask(session, run) {
+    session.models.questionMark.run = async function* (input) { session.models.recognized.push(input); yield 'YES' }
     await drawSeed(session, run)
-    await run.check('Scripted answer streams into one editable shape', async () => {
-      await session.human.getByRole('button', { name: 'Ask pi', exact: true }).click()
+    await run.check('Pointer release answers a handwritten marker in one editable shape', async () => {
+      await session.human.mouse.move(350, 220)
+      await session.human.mouse.down()
+      for (const [x, y] of [[365, 205], [385, 207], [399, 221], [399, 239], [388, 252], [375, 263], [375, 278]]) await session.human.mouse.move(x, y, { steps: 2 })
+      await session.human.mouse.up()
+      await session.human.mouse.move(375, 295)
+      await session.human.mouse.down()
+      await session.human.mouse.move(376, 296)
+      await session.human.mouse.up()
       await session.human.waitForFunction(() => window.canvas.editor.getCurrentPageShapes().some((s) => s.meta.agentAnswer &&
         window.canvas.editor.getShapeUtil(s).getText(s) === 'A short answer.'))
       assert.equal(session.models.asked.length, 1)

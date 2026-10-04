@@ -33,7 +33,7 @@ Handwriting: "2x + 4 = 10" → Reply: "x = 3"
 Handwriting: "app idea: habit tracker" → Reply: "Start with one habit and a daily check-in."
 Do not append comments about how the words or numerals are written.
 
-Respect the requested style: a hint gives one hint without the solution; a next step gives one action; a check gives the main content correction, not a full rewrite. No preamble, screenshot description, or generic praise.
+When the current image contains a red box around a question mark, answer the handwritten question ending at that mark. Ignore unrelated older equations and printed answers. Give a useful definition or explanation when the question calls for one. No preamble, screenshot description, or generic praise.
 
 ${CANVAS_REPLY_RULES}`
 

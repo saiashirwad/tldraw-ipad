@@ -14,6 +14,6 @@ Keep the UI to the canvas, undo/redo, and tucked-away drawing controls. Preserve
 
 Clear/restore replace user work: preserve an editable backup and require the current revision. Keep restore validation before live mutation. Captures exclude controls and use the latest visible human view; backups retain editable content and embedded images.
 
-Ask pi sends the current viewport screenshot and streams the reply back as one editable text shape, so a single undo removes the whole answer. Keep the pi process on the server, keep the model tool-free, and never let the ask control appear for `?agent=1` clients.
+Handwritten question marks trigger answers after the drawing pointer lifts and an idle pause. In pen mode, resting touch contacts do not delay or cancel answers. Keep the model tool-free and replace only confirmed marker ink after a complete answer, in one undoable SDK operation. The standalone iPad app runs Pi Durable locally with native private storage and a Keychain-backed DeepSeek network adapter. Explicit LAN mode retains the server runner. Agent clients never run automatic recognition.
 
 Run `pnpm test` for sync, persistence, capture, CLI, Ask pi, or interaction changes. It uses isolated storage. For the iPad host, build/install with `scripts/run-ipad.sh` and inspect the actual device. A browser test or screenshot does not establish physical Pencil/Safari behavior; report that verification separately. Keep scope to drawing back and forth; voice and annotation workflows belong outside this project.

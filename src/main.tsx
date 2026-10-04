@@ -4,7 +4,11 @@ import { useSync } from '@tldraw/sync'
 import { atom, createUserId, UserRecordType, DefaultStylePanel, StylePanelSection, StylePanelColorPicker, StylePanelOpacityPicker, Tldraw, useEditor, useValue, type Editor, type TLAssetStore } from 'tldraw'
 import { installAgentBridge } from './agent'
 import { parsePhysicalInstructionStep } from './runtime'
-import { AskControl } from './ask'
+import { QuestionAnswers } from './ask'
+import { standalone } from './native'
+import { runStandaloneVerification } from './standalone-verification'
+import { openLocalBoard, captureLocalView } from './local-board'
+import { openCanvasAssistant } from './canvas-assistant'
 import { installPenWidth, penShapeUtils, penWidth, setPenWidth } from './pen'
 import { installFingerPan } from './navigation'
 import 'tldraw/tldraw.css'
@@ -24,7 +28,7 @@ const assets: TLAssetStore = {
   resolve: (asset) => asset.props.src ? new URL(asset.props.src, location.origin).href : null,
 }
 
-function App() {
+function SharedApp() {
   const store = useSync({ uri: `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/sync`, assets,
     users: agent ? agentUsers : undefined, getUserPresence: agent ? () => null : undefined,
     onCustomMessageReceived: (message) => {
@@ -50,6 +54,7 @@ function mount(editor: Editor, synced: () => boolean) {
   }
   installAgentBridge(editor)
   if (agent) return
+  if (standalone) window.canvas.capture = () => captureLocalView(editor)
   const removePenWidth = installPenWidth(editor)
   const removeFingerPan = touchDevice ? installFingerPan(editor) : () => {}
   const loadId = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, '0')).join('')
@@ -57,10 +62,11 @@ function mount(editor: Editor, synced: () => boolean) {
   let penUp = 0
   const recordPen = (event: PointerEvent) => { if (event.pointerType === 'pen') penUp++ }
   if (verificationSession) editor.getContainer().addEventListener('pointerup', recordPen, true)
-  void fetch('/api/status').then((response) => response.json()).then((status) => { instanceId = status.instanceId }).catch(() => {})
+  if (!standalone) void fetch('/api/status').then((response) => response.json()).then((status) => { instanceId = status.instanceId }).catch(() => {})
   const publishView = () => {
     if (document.visibilityState !== 'visible') return
     localStorage.setItem('canvas-view', JSON.stringify(editor.getCamera()))
+    if (standalone) return
     const instructionStep = verificationSession ? parsePhysicalInstructionStep(editor.getCurrentPageShapes()
       .find((shape) => shape.id === 'shape:physical-instruction')?.meta.verificationInstruction) : undefined
     void fetch('/api/view', {
@@ -75,7 +81,7 @@ function mount(editor: Editor, synced: () => boolean) {
   return () => { clearInterval(timer); removePenWidth(); removeFingerPan(); editor.getContainer().removeEventListener('pointerup', recordPen, true) }
 }
 
-function Controls() {
+function Controls({ assistant }: { assistant?: Awaited<ReturnType<typeof openCanvasAssistant>> }) {
   const editor = useEditor()
   const [open, setOpen] = useState(false)
   const tool = useValue('tool', () => editor.getCurrentToolId(), [editor])
@@ -115,10 +121,29 @@ function Controls() {
           <StylePanelSection><StylePanelColorPicker /><StylePanelOpacityPicker /></StylePanelSection>
         </DefaultStylePanel> : <DefaultStylePanel />}
       </div>}
-      <AskControl />
+      <QuestionAnswers assistant={assistant} />
       <button className="toggle controls" aria-label="Drawing tools" aria-expanded={open} onClick={() => setOpen(!open)}>✎</button>
     </div>
   </>
 }
 
-createRoot(document.getElementById('root')!).render(<App />)
+async function start() {
+  const root = createRoot(document.getElementById('root')!)
+  if (!standalone) { root.render(<SharedApp />); return }
+  try {
+    const board = await openLocalBoard()
+    const assistant = await openCanvasAssistant(board.flush)
+    const assetUrls = (await import('@tldraw/assets/selfHosted')).getAssetUrls({ baseUrl: './tldraw-assets/' })
+    root.render(<Tldraw store={board.store} shapeUtils={penShapeUtils} assetUrls={assetUrls} hideUi
+      licenseKey={import.meta.env.VITE_TLDRAW_LICENSE_KEY} onMount={(editor) => {
+        const dispose = mount(editor, () => true)
+        const unlisten = board.listen((error) => { document.dispatchEvent(new CustomEvent('canvas-storage-error', { detail: String(error) })) })
+        void assistant.reconcile(editor).then(() => runStandaloneVerification({ editor, flushBoard: board.flush, buildId: __CANVAS_BUILD_ID__ }))
+          .catch((error) => { document.dispatchEvent(new CustomEvent('canvas-storage-error', { detail: String(error) })) })
+        return () => { dispose?.(); unlisten(); void assistant.close() }
+      }}><Controls assistant={assistant} /></Tldraw>)
+  } catch (error) {
+    root.render(<p role="alert">{error instanceof Error ? error.message : 'Could not open the saved canvas. Your files are preserved.'}</p>)
+  }
+}
+void start()

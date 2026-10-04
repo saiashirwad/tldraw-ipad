@@ -1,3 +1,4 @@
+import { sourceBuildId } from '../../build-id'
 import { createHash } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { networkInterfaces } from 'node:os'
@@ -41,7 +42,8 @@ export function lanHost(explicit?: string) {
 
 export async function installHost(run: Run, device: Device, force = false) {
   const hash = createHash('sha256')
-  for (const name of ['ipad/Canvas.swift', 'ipad/Info.plist', 'ipad/Canvas.xcodeproj/project.pbxproj']) hash.update(await readFile(resolve(root, name)))
+  for (const name of ['ipad/Canvas.swift', 'ipad/CanvasNative.swift', 'ipad/Info.plist', 'ipad/Canvas.xcodeproj/project.pbxproj']) hash.update(await readFile(resolve(root, name)))
+  hash.update(sourceBuildId(root))
   const fingerprint = hash.digest('hex')
   const stamp = resolve(root, 'ipad/build/installed.json')
   let installed: unknown = null

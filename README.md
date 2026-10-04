@@ -24,7 +24,7 @@ The Mac stores the board in `data/board.sqlite` and images in `data/assets/`. Bo
 
 ## Install the iPad app
 
-The app named **Canvas** is a separate install (`in.texoport.tldrawipad`). Its single Swift file hosts the same tldraw page in WebKit, saves the server address, and lets you reconnect when the address changes. It has no drawing or sync implementation of its own.
+The app named **Canvas** is a separate install (`in.texoport.tldrawipad`). WebKit hosts the SDK editor. Normal launch uses its bundled local page. An explicit server address opens the shared LAN page and saves that address for later LAN development.
 
 With Xcode installed and an unlocked, paired iPad with Developer Mode enabled:
 
@@ -63,15 +63,30 @@ Backups are standard `.tldr` files with editable shapes, ink, and embedded image
 
 Set `TLDRAW_IPAD_URL` or use `--url` to point the CLI at a different host. The CLI runs a short-lived headless Chromium connected through tldraw sync: the SDK supplies shape defaults, image decoding, and PNG rendering. A draw/put command reports success after the persistent server acknowledges its shapes.
 
-## Ask pi while you draw
+## Answer where you write
 
-Write a question mark with a separate hook and dot beside your handwritten question, then pause for about one second. The app checks the isolated mark with a separate vision recognizer and replaces only those strokes with a short answer at the same position. The mark stays until recognition and the entire answer succeed. New writing cancels pending work and retries an intact mark after the next pause. One undo restores the exact mark and removes the answer; redo restores the answer. Ambiguous marks, failed requests, and unfinished answers leave the ink alone. Unchanged marks do not repeatedly ask. The **⌄** panel contains **Answer handwritten ? after a pause**, enabled by default and saved for that browser. Automatic recognition uses only new local drawing, so synced ink and undo do not start requests.
+Write a question mark with a separate hook and dot beside your handwritten question, then lift the Pencil. Resting your palm on the canvas does not delay or cancel the answer. After about one second, a conservative vision check confirms the mark and an agent puts an answer in that position: a number for arithmetic, or a few sentences for a conceptual question. Longer answers move down when needed to clear existing writing. The marker stays until the complete answer succeeds. New writing cancels the request. One undo restores the exact original marker and removes the answer. Unchanged markers, synced ink, undo, and reload do not start new requests. Only a failure shows a small message. There is no Ask button, typed prompt, reply picker, or automatic-answer switch.
 
-Tap **Ask pi** at the bottom right, beside the pen, and the current viewport goes to a pi agent as a screenshot: your drawing and handwriting, not the whole board. The answer streams back into one small, editable text shape beside the visible handwriting, avoiding existing ink and replies. Select part of the drawing to use it as the anchor; without a selection, visible handwriting takes priority over other shapes. Old offscreen answers don't push new replies away. The camera stays put when both fit, and otherwise frames just the writing and reply. Tap **Stop** to end an answer early; the text written so far stays. One undo removes the whole reply.
+Normal launch of **Canvas** opens a bundled local canvas. It needs internet for DeepSeek but no running Mac, Node server, or LAN connection. Drawing and embedded images save to the app's private files. Pi Durable 1.0.2 stores recognition and answer conversations in separate JSONL journals. The model has no tools. The journals persist across app launches; each answer starts with fresh visual context. A red box in the model image identifies the new question mark. DeepSeek transcribes that question before answering; only the answer appears on the canvas.
 
-The `⌄` button opens an optional typed question and four reply styles: **Brief answer** (default), **Hint**, **Next step**, and **Check my work**. Handwriting is treated as your message, not a penmanship sample: questions get answers, unfinished equations get completed, greetings get normal replies, and ideas get one concrete next step. Letter shapes and stroke quality are not reviewed unless you ask. Replies are usually 2–12 words, one short sentence at most (maximum 25 words). The server stops replies at 180 characters even if the model ignores the prompt; a clipped reply ends in `…`. Ask again for more. Edit the presets in `src/ask-prompts.ts` and the base instructions in `pi.ts`.
+Build and install, then provision the computer's `.env` credential once:
 
-The server keeps one long-lived `pi --mode rpc` process on `deepseek/deepseek-flash`, so the conversation carries across asks: draw, ask, refine, ask again. It runs with no tools and no project context, so it reads the screenshot and talks but cannot touch files or the board itself. Set `TLDRAW_IPAD_PI` to another pi binary or `TLDRAW_IPAD_MODEL` to another model. The control is hidden from `?agent=1` clients.
+```sh
+./scripts/run-ipad.sh DEVICE_UDID
+node scripts/provision-deepseek.mjs --device DEVICE_UDID --env-file .env
+```
+
+The provisioner transfers the key through a private temporary file. Native launch imports it into this device's Keychain and deletes the import. The credential never enters the frontend, application bundle, source, or command arguments. The native request adapter accepts only the DeepSeek completion endpoint and does not follow redirects. Explicit LAN launches get a separate WebView configuration without private storage or provider access.
+
+This prototype preserves completed conversations and saves a completed answer before changing ink. On reopening, a completed answer waiting for application replaces an exact surviving marker once. Applied answers never return after undo. Recognition or answering interrupted by termination is cancelled on reopen with ink preserved. Draw again to retry. Continuous background execution and automatic continuation of unfinished provider requests are not promised.
+
+The standalone canvas is separate from the existing shared Mac board. To open that shared board explicitly, pass its address:
+
+```sh
+./scripts/run-ipad.sh DEVICE_UDID http://YOUR_MAC_IP:4789
+```
+
+The CLI and normal LAN verification still target the Mac board. Its automatic question-mark path retains the server Pi runner. Standalone fonts, icons, and editor scripts are bundled locally; the SDK license UI remains visible.
 
 ## Build and verify
 
@@ -132,7 +147,11 @@ The render scenario checks the loaded build, a known shape, and the actual devic
 
 Device reports include actual iPad PNGs, SDK canvas exports, status snapshots, native logs, and editable backups. Pressure, palm rejection, responsiveness, and rotation remain explicitly unverified until a dedicated physical acceptance pass. A successful browser test or device launch does not prove those interactions.
 
-Agents use [.agents/skills/verify/SKILL.md](.agents/skills/verify/SKILL.md) to select checks and interpret evidence. Its feature map covers drawing, capture, storage, Ask pi, and the native host.
+Agents use [.agents/skills/verify/SKILL.md](.agents/skills/verify/SKILL.md) to select checks and interpret evidence. Its feature map covers drawing, capture, storage, automatic question answers, and the native host.
+
+For standalone device checks, run `node scripts/standalone-ipad.mjs --scenario question`. The check draws a question mark through SDK pen events and requires live DeepSeek to replace it with `2` beside `1 + 1 =`. It checks exact marker restoration with Undo and leaves the answer visible after Redo. `--scenario live` is an alias for this check. `--scenario questions` checks arithmetic, a monad definition, and the meaning of life consecutively on the same board, including exact Undo/Redo for each reply. To check saved content after relaunch, reuse its reported board ID with `--scenario render --skip-install --board BOARD_ID --expect-existing`. Each check writes a device screenshot and a report under `test-results/verify/`. These checks do not perform physical Pencil input.
+
+Run `node scripts/standalone-ipad.mjs --scenario stability` to check that the native canvas and its controls remain visible after 8 and 95 seconds. The report records JavaScript errors and the SDK license state, then captures the device after the final check.
 
 The app was built, installed, and launched on the paired physical iPad. The device connected over the LAN, handwriting appeared in an agent capture, and an agent response synced back to the device. An editable backup of that first session is saved locally in `data/first-ipad-session.tldr`. The new verification runner has also checked a real Pencil stroke and its Undo on the device. Pencil pressure, palm rejection, multi-touch gestures, rotation transitions, and Home Screen behavior have not received a dedicated interaction acceptance pass. Safari on the Mac can also be used for manual review.
 
@@ -140,16 +159,34 @@ The app was built, installed, and launched on the paired physical iPad. The devi
 
 The SDK is source available. [Production use requires a tldraw license key](https://tldraw.dev/community/license). Development works without one; the SDK may display its license notice. To supply a key, create `.env.local` with `VITE_TLDRAW_LICENSE_KEY=your-key`, then restart development or rebuild. The app preserves the SDK's license UI.
 
+The native Debug installer uses `pnpm build:ipad` to bundle a development frontend. `pnpm build` creates the production frontend for Release. Xcode rejects a frontend whose environment does not match its configuration. An unlicensed production frontend at the native `canvas://app` address causes the SDK to remove the editor after five seconds.
+
 ## Small code map
 
 - `src/main.tsx`: tldraw sync, Pencil mode, two corner controls, and view reporting.
-- `src/ask.tsx`: the Ask pi control, the screenshot upload, and streaming the answer into a shape.
+- `src/ask.tsx`: automatic question-mark answers and unobtrusive failure messages.
+- `src/canvas-assistant.ts`: Pi Durable conversations and question-attempt reconciliation.
+- `src/local-board.ts`: SDK snapshot and embedded image persistence.
+- `src/native.ts`: private file and key-free provider adapters.
 - `src/auto-ask.ts`: local drawing ownership, idle recognition, cancellation, and undoable question-mark replacement.
 - `src/question-mark.ts`: geometric candidate filtering and conservative vision recognition.
-- `src/ask-placement.ts`: nearby, non-overlapping reply placement using visible ink or the selection.
-- `src/ask-prompts.ts`: short-note rules and the four reply presets shared by browser and server.
+- `src/ask-placement.ts`: shared rectangle type for question markers.
+- `src/ask-prompts.ts`: short-answer rules shared by browser and server.
 - `pi.ts`: the long-lived `pi --mode rpc` child that answers with a vision model.
 - `src/agent.ts`: SDK operations for shapes, images, captures, and editable files.
 - `server.ts`: one sync room, SQLite persistence, assets, and revision-guarded replacement.
 - `scripts/cli.mjs`: agent command and headless editor lifecycle.
-- `ipad/Canvas.swift`: iPad WebView host and connection recovery.
+- `ipad/Canvas.swift`: bundled and explicit LAN route selection.
+- `ipad/CanvasNative.swift`: scoped private files, Keychain import, and DeepSeek transport.
+
+For a standalone browser regression with scripted DeepSeek transport and real Pi Durable JSONL storage, run `pnpm test:browser --match standalone`. It checks no Mac API requests, persisted ink and conversation, exact undo after reload, and native request cancellation.
+
+For standalone device rendering and the live question loop, run:
+
+```sh
+node scripts/standalone-ipad.mjs --scenario render
+node scripts/standalone-ipad.mjs --scenario question --provision --env-file .env
+node scripts/standalone-ipad.mjs --scenario stability
+```
+
+The helper owns a separate native board and report. The question check uses the actual recognition and answer conversations through Keychain-authenticated native networking. Physical handwriting recognition and Pencil release still need human input.

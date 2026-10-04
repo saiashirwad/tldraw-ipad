@@ -7,3 +7,6 @@ test-results/
 ipad/build/
 *.xcuserstate
 xcuserdata/
+.env
+ipad/CanvasWeb/
+.audit/

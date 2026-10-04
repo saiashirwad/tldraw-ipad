@@ -1,34 +1,26 @@
-/** Shared by the tucked-away question control and the server. */
-export const ASK_PRESETS = {
-  brief: {
-    label: 'Brief answer',
-    prompt: 'Answer the current handwritten message directly. Prioritize a question or unfinished equation over older greetings. For an idea or draft, give one concrete next step; for a greeting, reply naturally. If there is no clear task, ask one short question about what I want to do.',
-  },
-  hint: {
-    label: 'Hint',
-    prompt: 'Give just one small hint that helps me work this out myself. Do not reveal the full solution or final answer.',
-  },
-  next: {
-    label: 'Next step',
-    prompt: 'Suggest only the single next step for the work in my handwriting or sketch. Do not give a whole plan.',
-  },
-  check: {
-    label: 'Check my work',
-    prompt: 'Check the reasoning or content of my work, not the handwriting. Point out only the most important mistake and its correction, or briefly confirm that it is correct. Do not invent a penmanship lesson.',
-  },
-} as const
+export const MAX_ANSWER_CHARS = 500
+export const CANVAS_INPUT_RULES = `The handwritten words are my messages to you, as if I had typed them. Respond to their meaning, not their appearance. Read ordinary handwriting variations naturally. Never critique letter shapes, slant, stroke quality, spelling, or punctuation unless I explicitly ask. Use only the current image to identify the question. Ignore earlier screenshots and unrelated printed assistant replies.`
+export const CANVAS_REPLY_RULES = `Give only the answer. A number or equation is enough for simple arithmetic. For a definition or conceptual question, give a useful explanation in 1–3 short sentences, at most 60 words and under ${MAX_ANSWER_CHARS} characters. Do not pad a simple answer with coaching, praise, or an offer to help. Plain text only, no markdown, headings, or lists.`
+export const QUESTION_TARGET_PROMPT = `The red box marks the handwritten question mark ending the question you must answer. Read the handwritten question that leads into that mark and answer its meaning. Use only this current image. Ignore unrelated equations, other questions, and printed answers elsewhere on the canvas. The red box is a targeting aid, not part of the handwriting. Do not mention the box or comment on spelling.`
+export const QUESTION_ANSWER_PROMPT = `${QUESTION_TARGET_PROMPT}\nFirst transcribe the handwritten question ending at the boxed question mark, then answer that question. Return exactly one JSON object with two nonempty string fields: {"question":"the question you read","answer":"your answer"}. The answer field contains plain text. No markdown fences or text outside the JSON object.`
 
-export type AskPreset = keyof typeof ASK_PRESETS
-export const MAX_ANSWER_CHARS = 180
-export const CANVAS_INPUT_RULES = `The handwritten words are my messages to you, as if I had typed them. Respond to their meaning, not their appearance. Never critique letter shapes, slant, stroke quality, spelling, or punctuation unless I explicitly ask. Printed assistant replies are only context: do not review them or continue their observational style.`
-export const CANVAS_REPLY_RULES = `Give only the answer or one useful next action. Usually 2–12 words; at most 25 words and under ${MAX_ANSWER_CHARS} characters. Use one short sentence at most; a number, equation, or brief phrase alone is fine. Do not pad a simple answer with coaching, praise, an explanation, or an offer to help. Plain text only, no markdown, headings, or lists.`
+export function parseQuestionAnswer(reply: string): string {
+  const text = reply.trim().replace(/^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/i, '$1')
+  let value: unknown
+  try { value = JSON.parse(text) }
+  catch { throw new Error('The answer could not be read. Your ? is still there.') }
+  if (!value || typeof value !== 'object' || !('question' in value) || typeof value.question !== 'string' || !value.question.trim() ||
+    !('answer' in value) || typeof value.answer !== 'string' || !value.answer.trim()) {
+    throw new Error('The model did not identify and answer the marked question. Your ? is still there.')
+  }
+  return value.answer.trim()
+}
 
 /** Apply brevity even when a typed question or a later conversation turn asks for more. */
-export function buildAskPrompt(question: unknown, preset: unknown = 'brief') {
-  const mode = typeof preset === 'string' && Object.hasOwn(ASK_PRESETS, preset) ? preset as AskPreset : 'brief'
+export function buildAskPrompt(question: unknown) {
   const typed = typeof question === 'string' ? question.trim().slice(0, 2000) : ''
   return `This is my current canvas screenshot.
 ${CANVAS_INPUT_RULES}
-${ASK_PRESETS[mode].prompt}
+Answer the current handwritten message directly. Prioritize a question or unfinished equation over older greetings. For an idea or draft, give one concrete next step; for a greeting, reply naturally. If there is no clear task, ask one short question about what I want to do.
 ${typed ? `My question: ${typed}\n` : ''}${CANVAS_REPLY_RULES}`
 }

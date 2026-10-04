@@ -123,7 +123,7 @@ export async function startServer({ port = 4789, host = '0.0.0.0', dataDir = res
         const body = JSON.parse((await readBody(req, MAX_ASK_BYTES)).toString())
         const image = parseImage(body.image)
         if (!image) return json({ error: 'Expected a PNG or JPEG screenshot of the canvas.' }, 400)
-        const prompt = buildAskPrompt(body.prompt, body.preset)
+        const prompt = buildAskPrompt(body.prompt)
         const controller = new AbortController()
         res.on('close', () => controller.abort())
         res.writeHead(200, {
