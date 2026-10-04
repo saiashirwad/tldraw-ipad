@@ -1,0 +1,5 @@
+[
+  { "id": "shape:input", "type": "geo", "x": 120, "y": 160, "text": "Your drawing", "props": { "w": 240, "h": 120, "geo": "rectangle", "color": "blue", "fill": "semi" } },
+  { "id": "shape:arrow", "type": "arrow", "x": 380, "y": 220, "props": { "start": { "x": 0, "y": 0 }, "end": { "x": 160, "y": 0 } } },
+  { "id": "shape:agent", "type": "geo", "x": 560, "y": 160, "text": "Agent's response", "props": { "w": 240, "h": 120, "geo": "rectangle", "color": "green", "fill": "semi" } }
+]

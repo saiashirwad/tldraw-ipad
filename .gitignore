@@ -1,0 +1,9 @@
+node_modules/
+dist/
+data/
+test-results/
+.env.local
+*.log
+ipad/build/
+*.xcuserstate
+xcuserdata/

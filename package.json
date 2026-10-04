@@ -1,0 +1,36 @@
+{
+  "name": "tldraw-ipad",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "bin": { "tldraw-ipad": "./scripts/cli.mjs" },
+  "scripts": {
+    "dev": "tsx server.ts",
+    "build": "tsc --noEmit && vite build",
+    "start": "tsx server.ts --production",
+    "check": "tsc --noEmit",
+    "test": "pnpm build && node --import tsx --test tests/*.test.ts",
+    "browser:install": "playwright install chromium",
+    "canvas": "node scripts/cli.mjs"
+  },
+  "dependencies": {
+    "@tldraw/sync": "5.5.2",
+    "@tldraw/sync-core": "5.5.2",
+    "@tldraw/tlschema": "5.5.2",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "tldraw": "5.5.2",
+    "ws": "8.20.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/ws": "^8.0.0",
+    "playwright": "^1.58.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.0",
+    "vite": "^8.3.2"
+  }
+}
