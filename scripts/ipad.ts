@@ -200,7 +200,11 @@ if (values.help) {
         })
         await showPhysicalInstruction(run, session, 'complete')
         await captureDevice(run, session, selectedDevice, 'gestures'); run.report.status = 'passed'
-      } else { run.report.status = 'passed' }
+      } else {
+        await showPhysicalInstruction(run, session, 'complete')
+        await captureDevice(run, session, selectedDevice, 'complete')
+        run.report.status = 'passed'
+      }
     }
   } catch (error) {
     run.report.status = 'failed'; run.report.error = String(error).slice(0, 1200); process.exitCode = 1

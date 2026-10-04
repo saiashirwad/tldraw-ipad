@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useSync } from '@tldraw/sync'
 import { atom, createUserId, UserRecordType, DefaultStylePanel, StylePanelSection, StylePanelColorPicker, StylePanelOpacityPicker, Tldraw, useEditor, useValue, type Editor, type TLAssetStore } from 'tldraw'
 import { installAgentBridge } from './agent'
+import { parsePhysicalInstructionStep } from './runtime'
 import { AskControl } from './ask'
 import { installPenWidth, penShapeUtils, penWidth, setPenWidth } from './pen'
 import { installFingerPan } from './navigation'
@@ -60,11 +61,13 @@ function mount(editor: Editor, synced: () => boolean) {
   const publishView = () => {
     if (document.visibilityState !== 'visible') return
     localStorage.setItem('canvas-view', JSON.stringify(editor.getCamera()))
+    const instructionStep = verificationSession ? parsePhysicalInstructionStep(editor.getCurrentPageShapes()
+      .find((shape) => shape.id === 'shape:physical-instruction')?.meta.verificationInstruction) : undefined
     void fetch('/api/view', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ pageId: editor.getCurrentPageId(), bounds: editor.getViewportPageBounds(), source: ipad ? 'ipad' : 'browser',
         ...(instanceId ? { client: { instanceId, buildId: __CANVAS_BUILD_ID__, loadId, sessionId: verificationSession, synced: synced(),
-          shapeIds: verificationSession ? editor.getCurrentPageShapes().slice(0, 256).map((shape) => shape.id) : [], penUp } } : {}) }),
+          shapeIds: verificationSession ? editor.getCurrentPageShapes().slice(0, 256).map((shape) => shape.id) : [], penUp, ...(instructionStep ? { instructionStep } : {}) } } : {}) }),
     }).catch(() => {})
   }
   publishView()

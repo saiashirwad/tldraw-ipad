@@ -128,7 +128,7 @@ pnpm ipad:verify --scenario pencil
 pnpm ipad:verify --scenario gestures
 ```
 
-The render scenario checks the loaded build, a known shape, and the actual device screenshot. Pencil shows instructions directly on the scratch board, waits for you to draw a stroke, then changes its instruction to tap Undo. Completion or failure is shown before the board closes. It checks actual pen release, synced ink, and removal of the same stroke. Gestures shows one-finger pan and pinch instructions in sequence, then checks viewport changes without document edits. Each physical checkpoint has a two-minute timeout; `--timeout SECONDS` changes it.
+The render scenario checks the loaded build, a known shape, and the actual device screenshot. Pencil shows instructions directly on the scratch board, waits for you to draw a stroke, then changes its instruction to tap Undo. Completion or failure is shown before the board closes. The runner waits for the visible client to acknowledge each instruction before capturing it. It checks actual pen release, synced ink, and removal of the same stroke. Gestures shows one-finger pan and pinch instructions in sequence, then checks viewport changes without document edits. Each physical checkpoint has a two-minute timeout; `--timeout SECONDS` changes it.
 
 Device reports include actual iPad PNGs, SDK canvas exports, status snapshots, native logs, and editable backups. Pressure, palm rejection, responsiveness, and rotation remain explicitly unverified until a dedicated physical acceptance pass. A successful browser test or device launch does not prove those interactions.
 

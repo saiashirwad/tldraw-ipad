@@ -10,6 +10,10 @@ import type { Status } from '../scripts/verification/session'
 test('client readiness rejects invalid shape IDs and malformed identity', () => {
   const identity = { instanceId: 'server', buildId: 'bundle', loadId: 'document', sessionId: 'test', synced: true, shapeIds: ['shape:ink'], penUp: 1 }
   assert.deepEqual(parseClientIdentity(identity), identity)
+  assert.deepEqual(parseClientIdentity({ ...identity, instructionStep: 'complete' }), { ...identity, instructionStep: 'complete' })
+  for (const instructionStep of ['unexpected', 'x'.repeat(101), 1, null]) {
+    assert.equal(parseClientIdentity({ ...identity, instructionStep }), null)
+  }
   for (const change of [{ shapeIds: ['asset:one'] }, { shapeIds: Array(257).fill('shape:ink') }, { penUp: -1 },
     { synced: 'yes' }, { sessionId: {} }, { loadId: null }]) assert.equal(parseClientIdentity({ ...identity, ...change }), null)
   assert.equal(parseClientIdentity(null), null)

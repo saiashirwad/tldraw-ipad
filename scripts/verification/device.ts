@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { networkInterfaces } from 'node:os'
 import { resolve } from 'node:path'
 import { command, root, type Run, type Session, until, type Status } from './session'
+import type { PhysicalInstructionStep } from '../../src/runtime'
 
 type Device = { id: string; name: string; udid: string; type: string; connected: boolean }
 function object(value: unknown): Record<string, unknown> {
@@ -88,14 +89,27 @@ const physicalInstructions = {
   zoom: 'Pan received. Pinch to zoom. Do not draw.\nThe check will then close this scratch board automatically.',
   complete: 'Check complete. You can stop interacting.\nReturning to your normal board.',
   ended: 'Check ended. You can stop interacting.\nReturning to your normal board. The report records the result.',
-}
+} satisfies Record<PhysicalInstructionStep, string>
 
 export async function showPhysicalInstruction(run: Run, session: Session, step: keyof typeof physicalInstructions) {
-  const view = (await session.status()).view
+  const before = await session.status()
+  const view = before.view
+  const visibleClient = view?.client
+  const waitForClient = view && Date.now() - view.updatedAt < 15000 && visibleClient?.instanceId === before.instanceId &&
+    visibleClient.buildId === before.buildId && visibleClient.sessionId === run.report.runId && visibleClient.synced
   const scale = Math.min(1, (view?.bounds.w ?? 680) / 680)
   const file = resolve(run.dir, 'instruction.json')
   await writeFile(file, JSON.stringify([{ id: 'shape:physical-instruction', type: 'text',
     x: (view?.bounds.x ?? 0) + 40 * scale, y: (view?.bounds.y ?? 0) + 40 * scale, text: physicalInstructions[step],
+    meta: { verificationInstruction: step },
     props: { w: 600, scale, autoSize: false, size: 's', font: 'sans', color: 'grey' } }]))
+  const updatedAt = Date.now()
   await session.cli('draw', file)
+  if (waitForClient) {
+    await until(session.status, (status) => status.instanceId === before.instanceId && status.buildId === before.buildId &&
+      !!status.view && status.view.updatedAt >= updatedAt && status.view.client?.loadId === visibleClient.loadId &&
+      status.view.client.instanceId === status.instanceId && status.view.client.buildId === status.buildId &&
+      status.view.client.sessionId === run.report.runId && status.view.client.synced && status.view.client.instructionStep === step,
+      `Visible client did not acknowledge the ${step} instruction`)
+  }
 }

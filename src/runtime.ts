@@ -1,3 +1,12 @@
+export type PhysicalInstructionStep = 'draw' | 'undo' | 'pan' | 'zoom' | 'complete' | 'ended'
+
+export function parsePhysicalInstructionStep(value: unknown): PhysicalInstructionStep | undefined {
+  switch (value) {
+    case 'draw': case 'undo': case 'pan': case 'zoom': case 'complete': case 'ended': return value
+    default: return undefined
+  }
+}
+
 export type ClientIdentity = {
   instanceId: string
   buildId: string
@@ -6,10 +15,13 @@ export type ClientIdentity = {
   synced: boolean
   shapeIds: string[]
   penUp: number
+  instructionStep?: PhysicalInstructionStep
 }
 
 export function parseClientIdentity(value: unknown): ClientIdentity | null {
   if (!value || typeof value !== 'object') return null
+  const instructionStep = 'instructionStep' in value ? parsePhysicalInstructionStep(value.instructionStep) : undefined
+  if ('instructionStep' in value && instructionStep === undefined) return null
   if (!('instanceId' in value) || typeof value.instanceId !== 'string' || value.instanceId.length > 100 ||
       !('buildId' in value) || typeof value.buildId !== 'string' || value.buildId.length > 100 ||
       !('loadId' in value) || typeof value.loadId !== 'string' || value.loadId.length > 100 ||
@@ -19,5 +31,5 @@ export function parseClientIdentity(value: unknown): ClientIdentity | null {
       !('shapeIds' in value) || !Array.isArray(value.shapeIds) || value.shapeIds.length > 256 ||
       !value.shapeIds.every((id) => typeof id === 'string' && id.startsWith('shape:') && id.length < 200)) return null
   return { instanceId: value.instanceId, buildId: value.buildId, loadId: value.loadId, sessionId: value.sessionId,
-    synced: value.synced, shapeIds: value.shapeIds, penUp: value.penUp }
+    synced: value.synced, shapeIds: value.shapeIds, penUp: value.penUp, ...(instructionStep ? { instructionStep } : {}) }
 }

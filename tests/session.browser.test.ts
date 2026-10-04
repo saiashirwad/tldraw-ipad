@@ -24,7 +24,7 @@ test('bind failure releases model and storage resources and lets the process exi
   } finally { await session.close() }
 })
 
-test('physical step instructions update on the board and do not consume stroke undo', { timeout: 20000 }, async () => {
+test('physical step instructions update on the board and do not consume stroke undo', { timeout: 60000 }, async () => {
   const run = await createRun('physical-instruction-contract', 'browser')
   const session = await createBrowserSession(run, dist())
   try {
@@ -49,6 +49,44 @@ test('physical step instructions update on the board and do not consume stroke u
     run.report.status = 'passed'
   } catch (error) { run.report.status = 'failed'; throw error }
   finally { await session.close(); run.report.finishedAt = new Date().toISOString(); await run.save() }
+})
+
+test('physical instruction seeds before any human client is launched', { timeout: 10000 }, async () => {
+  const run = await createRun('physical-instruction-seed', 'browser')
+  const session = await createSession(run, { distDir: dist() })
+  try {
+    await showPhysicalInstruction(run, session, 'draw')
+    assert.equal((await session.status()).view, null)
+    assert((await session.snapshot()).documents.some((record: { state: { id: string; meta: { verificationInstruction?: string } } }) =>
+      record.state.id === 'shape:physical-instruction' && record.state.meta.verificationInstruction === 'draw'))
+    run.report.status = 'passed'
+  } catch (error) { run.report.status = 'failed'; throw error }
+  finally { await session.close(); run.report.finishedAt = new Date().toISOString(); await run.save() }
+})
+
+test('physical instruction helper waits for the visible client heartbeat', { timeout: 60000 }, async () => {
+  const run = await createRun('physical-instruction-acknowledgement', 'browser')
+  const session = await createBrowserSession(run, dist())
+  let release = () => {}
+  const held = new Promise<void>((resolve) => { release = resolve })
+  try {
+    await showPhysicalInstruction(run, session, 'draw')
+    await session.human.route('**/api/view', async (route) => { await held; await route.continue() })
+    const showing = showPhysicalInstruction(run, session, 'complete')
+    await session.human.waitForFunction(() => {
+      const editor = window.canvas.editor
+      const shape = editor.getCurrentPageShapes().find((s) => s.id === 'shape:physical-instruction')
+      return shape && editor.getShapeUtil(shape).getText(shape)?.includes('Check complete')
+    })
+    const result = await Promise.race([showing.then(() => 'returned'), new Promise((resolve) => setTimeout(() => resolve('waiting'), 1000))])
+    assert.equal(result, 'waiting', 'instruction helper returned before the visible client acknowledged completion')
+    release()
+    await showing
+    const client = (await session.status()).view?.client
+    assert.equal(client && 'instructionStep' in client ? client.instructionStep : undefined, 'complete')
+    run.report.status = 'passed'
+  } catch (error) { run.report.status = 'failed'; throw error }
+  finally { release(); await session.close(); run.report.finishedAt = new Date().toISOString(); await run.save() }
 })
 
 test('failed editor startup retains evidence and closes its owned server', { timeout: 10000 }, async () => {
