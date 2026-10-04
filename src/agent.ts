@@ -9,7 +9,7 @@ declare global {
       editor: Editor
       draw(shapes: ShapeInput[]): string[]
       put(input: { src: string; name: string; x?: number; y?: number; width?: number }): Promise<string[]>
-      capture(all: boolean): Promise<{ url: string; bounds: object; viewUpdatedAt: number | null }>
+      capture(all: boolean): Promise<{ url: string; bounds: Box; viewUpdatedAt: number | null }>
       backup(): Promise<string>
       prepareRestore(json: string): TLStoreSnapshot
     }

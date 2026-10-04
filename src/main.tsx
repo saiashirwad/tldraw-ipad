@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { useSync } from '@tldraw/sync'
 import { atom, createUserId, UserRecordType, DefaultStylePanel, StylePanelSection, StylePanelColorPicker, StylePanelOpacityPicker, Tldraw, useEditor, useValue, type Editor, type TLAssetStore } from 'tldraw'
 import { installAgentBridge } from './agent'
+import { AskControl } from './ask'
 import { installPenWidth, penShapeUtils, penWidth, setPenWidth } from './pen'
 import { installFingerPan } from './navigation'
 import 'tldraw/tldraw.css'
@@ -98,6 +99,7 @@ function Controls() {
           <StylePanelSection><StylePanelColorPicker /><StylePanelOpacityPicker /></StylePanelSection>
         </DefaultStylePanel> : <DefaultStylePanel />}
       </div>}
+      <AskControl />
       <button className="toggle controls" aria-label="Drawing tools" aria-expanded={open} onClick={() => setOpen(!open)}>✎</button>
     </div>
   </>

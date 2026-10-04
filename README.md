@@ -63,6 +63,16 @@ Backups are standard `.tldr` files with editable shapes, ink, and embedded image
 
 Set `TLDRAW_IPAD_URL` or use `--url` to point the CLI at a different host. The CLI runs a short-lived headless Chromium connected through tldraw sync: the SDK supplies shape defaults, image decoding, and PNG rendering. A draw/put command reports success after the persistent server acknowledges its shapes.
 
+## Ask pi while you draw
+
+Write a question mark with a separate hook and dot beside your handwritten question, then pause for about one second. The app checks the isolated mark with a separate vision recognizer and replaces only those strokes with a short answer at the same position. The mark stays until recognition and the entire answer succeed. New writing cancels pending work and retries an intact mark after the next pause. One undo restores the exact mark and removes the answer; redo restores the answer. Ambiguous marks, failed requests, and unfinished answers leave the ink alone. Unchanged marks do not repeatedly ask. The **⌄** panel contains **Answer handwritten ? after a pause**, enabled by default and saved for that browser. Automatic recognition uses only new local drawing, so synced ink and undo do not start requests.
+
+Tap **Ask pi** at the bottom right, beside the pen, and the current viewport goes to a pi agent as a screenshot: your drawing and handwriting, not the whole board. The answer streams back into one small, editable text shape beside the visible handwriting, avoiding existing ink and replies. Select part of the drawing to use it as the anchor; without a selection, visible handwriting takes priority over other shapes. Old offscreen answers don't push new replies away. The camera stays put when both fit, and otherwise frames just the writing and reply. Tap **Stop** to end an answer early; the text written so far stays. One undo removes the whole reply.
+
+The `⌄` button opens an optional typed question and four reply styles: **Brief answer** (default), **Hint**, **Next step**, and **Check my work**. Handwriting is treated as your message, not a penmanship sample: questions get answers, unfinished equations get completed, greetings get normal replies, and ideas get one concrete next step. Letter shapes and stroke quality are not reviewed unless you ask. Replies are usually 2–12 words, one short sentence at most (maximum 25 words). The server stops replies at 180 characters even if the model ignores the prompt; a clipped reply ends in `…`. Ask again for more. Edit the presets in `src/ask-prompts.ts` and the base instructions in `pi.ts`.
+
+The server keeps one long-lived `pi --mode rpc` process on `deepseek/deepseek-flash`, so the conversation carries across asks: draw, ask, refine, ask again. It runs with no tools and no project context, so it reads the screenshot and talks but cannot touch files or the board itself. Set `TLDRAW_IPAD_PI` to another pi binary or `TLDRAW_IPAD_MODEL` to another model. The control is hidden from `?agent=1` clients.
+
 ## Build and verify
 
 ```sh
@@ -72,7 +82,7 @@ pnpm build
 pnpm start
 ```
 
-`pnpm test` builds the app and runs an isolated browser round trip: live sync, drawing, undo/redo, palette, current-view PNG capture, images, editable backup/restore, revision guards, malformed restore rejection, and a server restart. It never touches `data/`. Preview artifacts land in `test-results/`.
+`pnpm test` builds the app and runs an isolated browser round trip: live sync, drawing, undo/redo, palette, current-view PNG capture, image placement, editable backup/restore, revision guards, malformed restore rejection, the streaming Ask pi flow against a scripted agent (near-ink placement, zoomed views, reply presets, length limits, stop, and undo/redo), and a server restart. It never touches `data/`. Preview artifacts land in `test-results/`.
 
 The app was built, installed, and launched on the paired physical iPad. The device connected over the LAN, handwriting appeared in an agent capture, and an agent response synced back to the device. An editable backup of that first session is saved locally in `data/first-ipad-session.tldr`. Pencil pressure, palm rejection, multi-touch gestures, rotation transitions, and Home Screen behavior have not received a dedicated interaction acceptance pass. Safari on the Mac can also be used for manual review.
 
@@ -83,6 +93,12 @@ The SDK is source available. [Production use requires a tldraw license key](http
 ## Small code map
 
 - `src/main.tsx`: tldraw sync, Pencil mode, two corner controls, and view reporting.
+- `src/ask.tsx`: the Ask pi control, the screenshot upload, and streaming the answer into a shape.
+- `src/auto-ask.ts`: local drawing ownership, idle recognition, cancellation, and undoable question-mark replacement.
+- `src/question-mark.ts`: geometric candidate filtering and conservative vision recognition.
+- `src/ask-placement.ts`: nearby, non-overlapping reply placement using visible ink or the selection.
+- `src/ask-prompts.ts`: short-note rules and the four reply presets shared by browser and server.
+- `pi.ts`: the long-lived `pi --mode rpc` child that answers with a vision model.
 - `src/agent.ts`: SDK operations for shapes, images, captures, and editable files.
 - `server.ts`: one sync room, SQLite persistence, assets, and revision-guarded replacement.
 - `scripts/cli.mjs`: agent command and headless editor lifecycle.

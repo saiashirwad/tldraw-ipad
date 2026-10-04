@@ -9,6 +9,11 @@ import { WebSocketServer } from 'ws'
 import { NodeSqliteWrapper, SQLiteSyncStorage, TLSocketRoom } from '@tldraw/sync-core'
 import type { TLRecord } from '@tldraw/tlschema'
 import { createServer as createViteServer } from 'vite'
+import { createPiAgent, limitAnswer, type AskRunner } from './pi'
+import { buildAskPrompt } from './src/ask-prompts'
+import { confirmedQuestionMark, QUESTION_MARK_SYSTEM_PROMPT } from './src/question-mark'
+
+const MAX_ASK_BYTES = 12 * 1024 * 1024
 
 const root = dirname(fileURLToPath(import.meta.url))
 const mime: Record<string, string> = {
@@ -17,7 +22,17 @@ const mime: Record<string, string> = {
 }
 export type View = { pageId: string; bounds: { x: number; y: number; w: number; h: number }; updatedAt: number; source: 'ipad' | 'browser' }
 
-export async function startServer({ port = 4789, host = '0.0.0.0', dataDir = resolve(root, 'data'), production = false } = {}) {
+export async function startServer({ port = 4789, host = '0.0.0.0', dataDir = resolve(root, 'data'), production = false,
+  ask = createPiAgent(), questionMark = createPiAgent({ systemPrompt: QUESTION_MARK_SYSTEM_PROMPT, timeoutMs: 15000 }) }: {
+  port?: number
+  host?: string
+  dataDir?: string
+  production?: boolean
+  /** Injectable so tests can script the model without a provider. */
+  ask?: AskRunner
+  /** A separate tool-free recognizer so YES/NO checks never contaminate the answer conversation. */
+  questionMark?: AskRunner
+} = {}) {
   await mkdir(resolve(dataDir, 'assets'), { recursive: true })
   const db = new DatabaseSync(resolve(dataDir, 'board.sqlite'))
   db.exec('PRAGMA journal_mode=WAL')
@@ -49,6 +64,44 @@ export async function startServer({ port = 4789, host = '0.0.0.0', dataDir = res
         if (source === 'browser' && view?.source === 'ipad' && Date.now() - view.updatedAt < 15000) return json({ ok: true })
         view = { pageId: body.pageId, bounds: { x: b.x, y: b.y, w: b.w, h: b.h }, updatedAt: Date.now(), source }
         return json({ ok: true })
+      }
+      if (req.method === 'POST' && url.pathname === '/api/question-mark') {
+        const body = JSON.parse((await readBody(req, MAX_ASK_BYTES)).toString())
+        const image = parseImage(body.image)
+        if (!image) return json({ error: 'Expected an image of the question mark.' }, 400)
+        const controller = new AbortController()
+        res.on('close', () => controller.abort())
+        let reply = ''
+        for await (const delta of questionMark.run({ image, prompt: 'Is the entire isolated ink in this latest image a clear question mark? Reply only YES or NO.' }, controller.signal)) {
+          if (controller.signal.aborted) break
+          reply += delta
+          if (reply.length > 32) break
+        }
+        if (controller.signal.aborted) return res.end()
+        return json({ questionMark: confirmedQuestionMark(reply) })
+      }
+      if (req.method === 'POST' && url.pathname === '/api/ask') {
+        const body = JSON.parse((await readBody(req, MAX_ASK_BYTES)).toString())
+        const image = parseImage(body.image)
+        if (!image) return json({ error: 'Expected a PNG or JPEG screenshot of the canvas.' }, 400)
+        const prompt = buildAskPrompt(body.prompt, body.preset)
+        const controller = new AbortController()
+        res.on('close', () => controller.abort())
+        res.writeHead(200, {
+          'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
+        })
+        res.flushHeaders()
+        try {
+          for await (const delta of limitAnswer(ask.run({ prompt, image }, controller.signal))) {
+            if (controller.signal.aborted || !res.writable) break
+            res.write(`${JSON.stringify({ type: 'delta', text: delta })}\n`)
+          }
+          if (!controller.signal.aborted) res.write(`${JSON.stringify({ type: 'done' })}\n`)
+        } catch (error) {
+          if (!controller.signal.aborted) res.write(`${JSON.stringify({ type: 'error', message: (error as Error).message })}\n`)
+        }
+        res.end()
+        return
       }
       if (req.method === 'POST' && url.pathname === '/api/clear') {
         const { revision } = JSON.parse((await readBody(req, 4096)).toString())
@@ -109,6 +162,8 @@ export async function startServer({ port = 4789, host = '0.0.0.0', dataDir = res
   return {
     server, room,
     async close() {
+      ask.dispose?.()
+      questionMark.dispose?.()
       room.close()
       for (const socket of sockets.clients) socket.terminate()
       sockets.close()
@@ -120,6 +175,13 @@ export async function startServer({ port = 4789, host = '0.0.0.0', dataDir = res
       db.close()
     },
   }
+}
+
+function parseImage(value: unknown): { data: string; mimeType: string } | null {
+  if (typeof value !== 'string') return null
+  const match = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)$/.exec(value)
+  if (!match || match[2].length > MAX_ASK_BYTES) return null
+  return { mimeType: match[1], data: match[2] }
 }
 
 async function readBody(req: import('node:http').IncomingMessage, limit: number) {
