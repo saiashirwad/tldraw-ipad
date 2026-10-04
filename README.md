@@ -82,9 +82,59 @@ pnpm build
 pnpm start
 ```
 
-`pnpm test` builds the app and runs an isolated browser round trip: live sync, drawing, undo/redo, palette, current-view PNG capture, image placement, editable backup/restore, revision guards, malformed restore rejection, the streaming Ask pi flow against a scripted agent (near-ink placement, zoomed views, reply presets, length limits, stop, and undo/redo), and a server restart. It never touches `data/`. Preview artifacts land in `test-results/`.
+`pnpm test` builds once in its own directory and runs the full browser/CLI round trip, focused scenarios, and logic tests. It covers live sync, drawing, touch navigation, undo/redo, palette, capture pixels and bounds, images, editable backup/restore, revision guards, invalid restore, streamed replies, automatic question-mark input and cancellation, and server restart. Both model runners are scripted. Tests never use `data/`.
 
-The app was built, installed, and launched on the paired physical iPad. The device connected over the LAN, handwriting appeared in an agent capture, and an agent response synced back to the device. An editable backup of that first session is saved locally in `data/first-ipad-session.tldr`. Pencil pressure, palm rejection, multi-touch gestures, rotation transitions, and Home Screen behavior have not received a dedicated interaction acceptance pass. Safari on the Mac can also be used for manual review.
+Use these commands while developing:
+
+```sh
+pnpm test:fast
+pnpm verify --list
+pnpm verify --scenario capture
+pnpm verify --scenario sync
+pnpm verify --scenario restore
+pnpm verify --scenario ask
+pnpm test:browser
+pnpm test:browser --match 'recognition|input'
+```
+
+Fast tests require no frontend build, browser, or model account. Focused scenarios start fresh boards and exercise the same functions used by the test suite. `pnpm test:browser` runs browser regressions and the full round trip without the logic tests.
+
+Each run prints a short result and an absolute `report.json` path under `test-results/verify/`. Browser reports link screenshots, a Playwright trace, console/request errors, document snapshots, and editable backups. Build and test output stays in log files. Evidence survives cleanup. `tldraw-ipad doctor` checks Node, Chromium, server identity, and current-view freshness without opening a browser.
+
+## Develop on the real iPad
+
+```sh
+pnpm ipad:dev --scenario drawing
+pnpm ipad:dev --scenario ask
+```
+
+The command selects the connected paired iPad, creates a scratch board on a separate LAN port, and opens it in Canvas. It installs the host when native source changes and reuses the install for web changes. Supply `--device ID` or `--host LAN_IP` if device or network selection is ambiguous. Model replies are scripted unless you pass `--live-model` for a provider check.
+
+Keep the command running. It prints a session file path. After editing web or server code, use another shell:
+
+```sh
+pnpm ipad:reload --session /absolute/path/session.json
+```
+
+Reload saves an editable backup, builds fresh frontend and backend source, restarts only the scratch server, and relaunches Canvas. It waits for the expected server instance, compiled bundle, session token, document load, and sync state. The scratch board stays intact. A test URL never overwrites the app's saved everyday address.
+
+`pnpm ipad:stop --session /absolute/path/session.json` ends the owned session and waits for the final report. Ctrl-C also ends it. The runner returns Canvas to its everyday address before saving the final scratch board. If backup fails, the runner retains scratch storage and reports its path. `pnpm ipad:install --device ID` forces a native build/install separately.
+
+## Check physical behavior
+
+```sh
+pnpm ipad:verify --scenario render
+pnpm ipad:verify --scenario pencil
+pnpm ipad:verify --scenario gestures
+```
+
+The render scenario checks the loaded build, a known shape, and the actual device screenshot. Pencil shows instructions directly on the scratch board, waits for you to draw a stroke, then changes its instruction to tap Undo. Completion or failure is shown before the board closes. It checks actual pen release, synced ink, and removal of the same stroke. Gestures shows one-finger pan and pinch instructions in sequence, then checks viewport changes without document edits. Each physical checkpoint has a two-minute timeout; `--timeout SECONDS` changes it.
+
+Device reports include actual iPad PNGs, SDK canvas exports, status snapshots, native logs, and editable backups. Pressure, palm rejection, responsiveness, and rotation remain explicitly unverified until a dedicated physical acceptance pass. A successful browser test or device launch does not prove those interactions.
+
+Agents use [.agents/skills/verify/SKILL.md](.agents/skills/verify/SKILL.md) to select checks and interpret evidence. Its feature map covers drawing, capture, storage, Ask pi, and the native host.
+
+The app was built, installed, and launched on the paired physical iPad. The device connected over the LAN, handwriting appeared in an agent capture, and an agent response synced back to the device. An editable backup of that first session is saved locally in `data/first-ipad-session.tldr`. The new verification runner has also checked a real Pencil stroke and its Undo on the device. Pencil pressure, palm rejection, multi-touch gestures, rotation transitions, and Home Screen behavior have not received a dedicated interaction acceptance pass. Safari on the Mac can also be used for manual review.
 
 ## tldraw license
 

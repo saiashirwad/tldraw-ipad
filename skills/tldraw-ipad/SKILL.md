@@ -5,6 +5,8 @@ description: Read or draw on the user's shared tldraw iPad canvas, place diagram
 
 Use the installed `tldraw-ipad` CLI from any directory. This is the browser canvas in `~/code/tldraw-ipad`; native MyPad uses a separate `mypad` command. The local server must be running. If it is down, start `pnpm dev` in `~/code/tldraw-ipad` and give the user the printed iPad URL.
 
+Run `tldraw-ipad doctor` when connection or capture setup is unclear. It checks Node, Chromium, server identity, and viewport freshness without opening an agent browser. For project testing, use `~/code/tldraw-ipad/.agents/skills/verify/SKILL.md` and its isolated scripts.
+
 Run `tldraw-ipad status` to find the current view and revision. For “look at my iPad,” run `tldraw-ipad capture --output /absolute/path/feedback.png`, then open the returned `image` path with your image-reading tool. Completion means you have inspected the pixels. If the view is absent or stale, ask the user to open the canvas; use `capture --all` only when they want the whole page.
 
 To draw, write a JSON array of tldraw shape partials and run `tldraw-ipad draw /absolute/path/shapes.json`. Use the reported view's canvas coordinates. For example:
