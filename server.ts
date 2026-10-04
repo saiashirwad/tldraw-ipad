@@ -12,6 +12,8 @@ import { createServer as createViteServer } from 'vite'
 import { createPiAgent, limitAnswer, type AskRunner } from './pi'
 import { buildAskPrompt } from './src/ask-prompts'
 import { confirmedQuestionMark, QUESTION_MARK_SYSTEM_PROMPT } from './src/question-mark'
+import { parseClientIdentity, type ClientIdentity } from './src/runtime'
+import { sourceBuildId } from './build-id'
 
 const MAX_ASK_BYTES = 12 * 1024 * 1024
 
@@ -20,26 +22,42 @@ const mime: Record<string, string> = {
   png: 'image/png', jpg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', svg: 'image/svg+xml',
   html: 'text/html', js: 'text/javascript', css: 'text/css', woff2: 'font/woff2',
 }
-export type View = { pageId: string; bounds: { x: number; y: number; w: number; h: number }; updatedAt: number; source: 'ipad' | 'browser' }
+export type View = { pageId: string; bounds: { x: number; y: number; w: number; h: number }; updatedAt: number; source: 'ipad' | 'browser'; client?: ClientIdentity }
 
 export async function startServer({ port = 4789, host = '0.0.0.0', dataDir = resolve(root, 'data'), production = false,
+  distDir = resolve(root, 'dist'), verificationSession = null, onVerificationReload, onVerificationStop,
   ask = createPiAgent(), questionMark = createPiAgent({ systemPrompt: QUESTION_MARK_SYSTEM_PROMPT, timeoutMs: 15000 }) }: {
   port?: number
   host?: string
   dataDir?: string
   production?: boolean
+  distDir?: string
+  verificationSession?: string | null
+  onVerificationReload?: (requestId: string) => void
+  onVerificationStop?: () => void
   /** Injectable so tests can script the model without a provider. */
   ask?: AskRunner
   /** A separate tool-free recognizer so YES/NO checks never contaminate the answer conversation. */
   questionMark?: AskRunner
 } = {}) {
+  const instanceId = randomUUID()
+  const buildId = production ? JSON.parse(await readFile(resolve(distDir, 'build.json'), 'utf8')).buildId as string : sourceBuildId(root)
   await mkdir(resolve(dataDir, 'assets'), { recursive: true })
   const db = new DatabaseSync(resolve(dataDir, 'board.sqlite'))
   db.exec('PRAGMA journal_mode=WAL')
   const storage = new SQLiteSyncStorage<TLRecord>({ sql: new NodeSqliteWrapper(db) })
   const room = new TLSocketRoom<TLRecord>({ storage })
   let view: View | null = null
-  const vite = production ? null : await createViteServer({ root, server: { middlewareMode: true, hmr: false }, appType: 'spa' })
+  const clientViews = new Map<string, View>()
+  const closeStorage = () => {
+    // SDK 5.5.2 has no storage dispose API; stop its delayed SQLite maintenance first.
+    const maintenance = Reflect.get(storage, 'pruneTombstones') as { cancel(): void } | undefined
+    maintenance?.cancel()
+    db.close()
+  }
+  let vite: Awaited<ReturnType<typeof createViteServer>> | null = null
+  try { if (!production) vite = await createViteServer({ root, server: { middlewareMode: true, hmr: false }, appType: 'spa' }) }
+  catch (error) { room.close(); closeStorage(); throw error }
   const sockets = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 })
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host}`)
@@ -51,18 +69,39 @@ export async function startServer({ port = 4789, host = '0.0.0.0', dataDir = res
       // Reject cross-origin browser writes. This is a personal app on a trusted LAN.
       if (req.headers.origin && req.headers.origin !== url.origin) return json({ error: 'Origin rejected' }, 403)
       if (req.method === 'GET' && url.pathname === '/api/status') {
-        return json({ revision: room.getCurrentDocumentClock(), clients: room.getNumActiveSessions(), view })
+        return json({ revision: room.getCurrentDocumentClock(), clients: room.getNumActiveSessions(), view,
+          instanceId, buildId, mode: verificationSession ? 'verification' : 'live', verificationSession,
+          clientViews: [...clientViews.values()].filter((v) => Date.now() - v.updatedAt < 15000) })
+      }
+      const verificationControl = url.pathname === '/api/verification/reload' ? onVerificationReload :
+        url.pathname === '/api/verification/stop' ? onVerificationStop : undefined
+      if (req.method === 'POST' && verificationControl && verificationSession) {
+        const body = JSON.parse((await readBody(req, 4096)).toString())
+        if (body.instanceId !== instanceId || body.sessionId !== verificationSession || typeof body.requestId !== 'string' || body.requestId.length > 100) {
+          return json({ error: 'Verification session changed' }, 409)
+        }
+        verificationControl(body.requestId)
+        return json({ accepted: body.requestId }, 202)
       }
       if (req.method === 'GET' && url.pathname === '/api/snapshot') return json(room.getCurrentSnapshot())
       if (req.method === 'POST' && url.pathname === '/api/view') {
-        const body = JSON.parse((await readBody(req, 4096)).toString())
+        const body = JSON.parse((await readBody(req, 65536)).toString())
         const b = body.bounds
         if (!body.pageId?.startsWith('page:') || !b || ![b.x, b.y, b.w, b.h].every(Number.isFinite) || b.w <= 0 || b.h <= 0) {
           return json({ error: 'Invalid viewport' }, 400)
         }
         const source = body.source === 'ipad' ? 'ipad' : 'browser'
+        const client = body.client === undefined ? undefined : parseClientIdentity(body.client)
+        if (client === null) return json({ error: 'Invalid client identity' }, 400)
+        const next: View = { pageId: body.pageId, bounds: { x: b.x, y: b.y, w: b.w, h: b.h }, updatedAt: Date.now(), source,
+          ...(client ? { client } : {}) }
+        if (client) {
+          for (const [id, prior] of clientViews) if (Date.now() - prior.updatedAt >= 15000) clientViews.delete(id)
+          if (clientViews.size >= 32) clientViews.delete(clientViews.keys().next().value!)
+          clientViews.set(client.loadId, next)
+        }
         if (source === 'browser' && view?.source === 'ipad' && Date.now() - view.updatedAt < 15000) return json({ ok: true })
-        view = { pageId: body.pageId, bounds: { x: b.x, y: b.y, w: b.w, h: b.h }, updatedAt: Date.now(), source }
+        view = next
         return json({ ok: true })
       }
       if (req.method === 'POST' && url.pathname === '/api/question-mark') {
@@ -142,8 +181,8 @@ export async function startServer({ port = 4789, host = '0.0.0.0', dataDir = res
       if (url.pathname.startsWith('/api/')) return json({ error: 'Not found' }, 404)
       if (vite) return vite.middlewares(req, res, () => json({ error: 'Not found' }, 404))
       const path = url.pathname === '/' ? 'index.html' : decodeURIComponent(url.pathname).slice(1)
-      const file = resolve(root, 'dist', path)
-      if (!file.startsWith(resolve(root, 'dist') + '/')) return json({ error: 'Not found' }, 404)
+      const file = resolve(distDir, path)
+      if (!file.startsWith(resolve(distDir) + '/')) return json({ error: 'Not found' }, 404)
       const bytes = await readFile(file)
       res.writeHead(200, { 'Content-Type': mime[path.split('.').pop()!] ?? 'application/octet-stream' })
       res.end(bytes)
@@ -158,23 +197,26 @@ export async function startServer({ port = 4789, host = '0.0.0.0', dataDir = res
     if (url.pathname !== '/sync' || !sessionId || (req.headers.origin && req.headers.origin !== url.origin)) return socket.destroy()
     sockets.handleUpgrade(req, socket, head, (ws) => room.handleSocketConnect({ sessionId, socket: ws }))
   })
-  await new Promise<void>((accept, reject) => { server.once('error', reject); server.listen(port, host, accept) })
-  return {
+  let closed = false
+  const app = {
     server, room,
     async close() {
+      if (closed) return
+      closed = true
       ask.dispose?.()
       questionMark.dispose?.()
       room.close()
       for (const socket of sockets.clients) socket.terminate()
       sockets.close()
-      await vite?.close()
-      await new Promise<void>((accept) => server.close(() => accept()))
-      // SDK 5.5.2 has no storage dispose API; stop its delayed SQLite maintenance first.
-      const maintenance = Reflect.get(storage, 'pruneTombstones') as { cancel(): void } | undefined
-      maintenance?.cancel()
-      db.close()
+      try {
+        const results = await Promise.allSettled([vite?.close(), new Promise<void>((accept) => server.close(() => accept()))])
+        for (const result of results) if (result.status === 'rejected') throw result.reason
+      } finally { closeStorage() }
     },
   }
+  try { await new Promise<void>((accept, reject) => { server.once('error', reject); server.listen(port, host, accept) }) }
+  catch (error) { await app.close(); throw error }
+  return app
 }
 
 function parseImage(value: unknown): { data: string; mimeType: string } | null {

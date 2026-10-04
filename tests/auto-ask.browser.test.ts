@@ -1,16 +1,12 @@
-import { test, type TestContext } from 'node:test'
+import { test as nodeTest, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
-import { chromium, type Page } from 'playwright'
-import { startServer } from '../server'
+import type { Page } from 'playwright'
 import type { AskInput, AskRunner } from '../pi'
 import { QUESTION_IDLE_MS } from '../src/question-mark'
+import { createRun, createBrowserSession, type Run } from '../scripts/verification/session'
 
-const exec = promisify(execFile)
 const root = resolve(import.meta.dirname, '..')
 const pause = (ms: number) => new Promise<void>((done) => setTimeout(done, ms))
 
@@ -34,24 +30,23 @@ async function eventually(check: () => boolean, message: string) {
   assert(check(), message)
 }
 
+const runs = new WeakMap<TestContext, Run>()
+function test(name: string, options: { timeout: number }, action: (t: TestContext) => Promise<void>) {
+  return nodeTest(name, options, async (t) => {
+    try { await action(t); const run = runs.get(t); if (run) run.report.status = 'passed' }
+    catch (error) { const run = runs.get(t); if (run) { run.report.status = 'failed'; run.report.error = String(error).slice(0, 1200) }; throw error }
+  })
+}
 async function fixture(t: TestContext, recognition = scripted('YES'), answer = scripted('2'), auto = true) {
-  const dataDir = await mkdtemp(resolve(tmpdir(), 'tldraw-auto-ask-'))
-  t.after(() => rm(dataDir, { recursive: true, force: true }))
-  const app = await startServer({ dataDir, port: 0, host: '127.0.0.1', production: true,
-    ask: answer.runner, questionMark: recognition.runner })
-  t.after(() => app.close())
-  const address = app.server.address()
-  assert(address && typeof address !== 'string')
-  const base = `http://127.0.0.1:${address.port}`
-  const browser = await chromium.launch()
-  t.after(() => browser.close())
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } })
-  await page.addInitScript((enabled) => localStorage.setItem('canvas-auto-ask', enabled ? 'on' : 'off'), auto)
-  await page.goto(base)
-  await page.waitForFunction(() => !!window.canvas)
-  await page.evaluate(() => window.canvas.editor.setCamera({ x: 0, y: 0, z: 1 }))
-  const cli = (...args: string[]) => exec(process.execPath, [resolve(root, 'scripts/cli.mjs'), '--url', base, ...args], { cwd: dataDir })
-  return { page, browser, base, dataDir, recognition, answer, cli }
+  const run = await createRun(t.name, 'browser')
+  runs.set(t, run)
+  const session = await createBrowserSession(run, process.env.TLDRAW_VERIFY_DIST ?? resolve(root, 'dist'), { ask: answer.runner, questionMark: recognition.runner, asked: [], recognized: [] })
+  t.after(async () => { await session.close(); run.report.finishedAt = new Date().toISOString(); await run.save() })
+  await session.human.evaluate((enabled) => localStorage.setItem('canvas-auto-ask', enabled ? 'on' : 'off'), auto)
+  await session.human.reload()
+  await session.human.waitForFunction(() => !!window.canvas)
+  await session.human.evaluate(() => window.canvas.editor.setCamera({ x: 0, y: 0, z: 1 }))
+  return { ...session, page: session.human, base: session.url, recognition, answer }
 }
 
 async function drawQuestion(page: Page) {

@@ -25,8 +25,9 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
 final class CanvasController: UIViewController, WKNavigationDelegate {
     private let web = WKWebView()
+    private var verificationURL: String?
     private var serverURL: String {
-        UserDefaults.standard.string(forKey: "serverURL") ?? "http://home.local:4789"
+        verificationURL ?? UserDefaults.standard.string(forKey: "serverURL") ?? "http://home.local:4789"
     }
     override var prefersStatusBarHidden: Bool { true }
 
@@ -46,6 +47,9 @@ final class CanvasController: UIViewController, WKNavigationDelegate {
     override func viewDidLoad() {
         super.viewDidLoad()
         let arguments = ProcessInfo.processInfo.arguments
+        if let index = arguments.firstIndex(of: "--verification-url"), arguments.indices.contains(index + 1) {
+            verificationURL = arguments[index + 1]
+        }
         if let index = arguments.firstIndex(of: "--canvas-url"), arguments.indices.contains(index + 1) {
             UserDefaults.standard.set(arguments[index + 1], forKey: "serverURL")
         }
@@ -58,7 +62,9 @@ final class CanvasController: UIViewController, WKNavigationDelegate {
             showConnectionError()
             return
         }
-        components.queryItems = [URLQueryItem(name: "ipad", value: "1")]
+        var items = components.queryItems?.filter { $0.name != "ipad" } ?? []
+        items.append(URLQueryItem(name: "ipad", value: "1"))
+        components.queryItems = items
         guard let url = components.url else { return }
         web.load(URLRequest(url: url))
     }
@@ -79,7 +85,8 @@ final class CanvasController: UIViewController, WKNavigationDelegate {
         }
         alert.addAction(UIAlertAction(title: "Connect", style: .default) { _ in
             let address = alert.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            UserDefaults.standard.set(address, forKey: "serverURL")
+            if self.verificationURL != nil { self.verificationURL = address }
+            else { UserDefaults.standard.set(address, forKey: "serverURL") }
             self.connect()
         })
         present(alert, animated: true)

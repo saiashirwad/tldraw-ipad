@@ -9,6 +9,7 @@ import { chromium, type Page } from 'playwright'
 import { startServer } from '../server'
 import type { AskInput, AskRunner } from '../pi'
 import { buildAskPrompt, MAX_ANSWER_CHARS } from '../src/ask-prompts'
+import { createRun } from '../scripts/verification/session'
 
 const exec = promisify(execFile)
 const root = resolve(import.meta.dirname, '..')
@@ -35,9 +36,10 @@ function scriptedAgent() {
 }
 
 test('shared canvas: agent → drawing → capture → backup → restart', { timeout: 120000 }, async (t) => {
+  const run = await createRun('full-round-trip', 'browser')
   const dataDir = await mkdtemp(resolve(tmpdir(), 'tldraw-ipad-test-'))
   const { asked, runner } = scriptedAgent()
-  let app = await startServer({ dataDir, port: 0, host: '127.0.0.1', production: true, ask: runner })
+  let app = await startServer({ dataDir, port: 0, host: '127.0.0.1', production: true, distDir: process.env.TLDRAW_VERIFY_DIST, ask: runner, questionMark: { async *run() { yield 'NO' } } })
   const address = app.server.address() as { port: number }
   const base = `http://127.0.0.1:${address.port}`
   const browser = await chromium.launch()
@@ -56,6 +58,10 @@ test('shared canvas: agent → drawing → capture → backup → restart', { ti
       assert.equal(bytes.subarray(1, 4).toString(), 'PNG')
     })
     const human = await browser.newPage({ viewport: { width: 1024, height: 768 } })
+    await human.context().tracing.start({ screenshots: true, snapshots: true, sources: true })
+    const errors: string[] = []
+    human.on('pageerror', (error) => errors.push(error.message))
+    human.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()) })
     await human.goto(base)
     await human.waitForFunction(() => !!window.canvas)
     const second = await browser.newPage()
@@ -120,7 +126,7 @@ test('shared canvas: agent → drawing → capture → backup → restart', { ti
       assert.equal(asked[0].image?.mimeType, 'image/png')
       assert(asked[0].image?.data.startsWith('iVBOR'), 'expected a PNG screenshot of the canvas')
       assert.equal(asked[0].prompt, buildAskPrompt(''))
-      await human.screenshot({ path: resolve(root, 'test-results/ask-near-ink.png') })
+      await human.screenshot({ path: resolve(run.dir, 'ask-near-ink.png') })
       await human.getByRole('button', { name: 'Undo', exact: true }).click()
       assert.equal(await human.evaluate(() => window.canvas.editor.getCurrentPageShapes().filter((s) => s.meta.agentAnswer).length), 0)
       assert.equal(await human.evaluate(() => window.canvas.editor.getCurrentPageShapes().filter((s) => s.type === 'draw').length), 1)
@@ -202,7 +208,7 @@ test('shared canvas: agent → drawing → capture → backup → restart', { ti
       assert(note.bounds.x > 3000 && note.bounds.x < 3100)
       assert(note.visible, 'the completed reply must remain visible')
       assert.equal(asked.at(-1)!.prompt, buildAskPrompt('verbose', 'check'))
-      await human.screenshot({ path: resolve(root, 'test-results/ask-zoomed.png') })
+      await human.screenshot({ path: resolve(run.dir, 'ask-zoomed.png') })
     })
 
     await t.test('captures the human viewport with shapes and ink, without controls', async () => {
@@ -211,15 +217,15 @@ test('shared canvas: agent → drawing → capture → backup → restart', { ti
       const view = (await status()).view
       assert.equal(view.bounds.x, 80)
       assert.equal(view.bounds.y, 100)
-      const result = await cli('capture', '--output', resolve(root, 'test-results/capture.png'))
+      const result = await cli('capture', '--output', resolve(run.dir, 'capture.png'))
       assert.deepEqual(result.bounds, view.bounds)
       const bytes = await readFile(result.image)
       assert.equal(bytes.readUInt32BE(16), 1024)
       assert.equal(bytes.readUInt32BE(20), 768)
-      await mkdir(resolve(root, 'test-results'), { recursive: true })
-      await human.screenshot({ path: resolve(root, 'test-results/canvas.png') })
+      await mkdir(run.dir, { recursive: true })
+      await human.screenshot({ path: resolve(run.dir, 'canvas.png') })
       await human.getByRole('button', { name: 'Drawing tools' }).click()
-      await human.screenshot({ path: resolve(root, 'test-results/palette.png') })
+      await human.screenshot({ path: resolve(run.dir, 'palette.png') })
       await human.getByRole('button', { name: 'Drawing tools' }).click()
     })
 
@@ -334,17 +340,31 @@ test('shared canvas: agent → drawing → capture → backup → restart', { ti
 
     await t.test('SQLite retains the board across server restarts', async () => {
       const before = await records()
+      await human.context().tracing.stop({ path: resolve(run.dir, 'trace.zip') })
+      run.report.artifacts.trace = resolve(run.dir, 'trace.zip')
+      await writeFile(resolve(run.dir, 'browser.log'), errors.join('\n'))
+      run.report.artifacts.browserLog = resolve(run.dir, 'browser.log')
       await browser.close()
       await app.close()
-      app = await startServer({ dataDir, port: address.port, host: '127.0.0.1', production: true, ask: runner })
+      app = await startServer({ dataDir, port: address.port, host: '127.0.0.1', production: true, distDir: process.env.TLDRAW_VERIFY_DIST, ask: runner, questionMark: { async *run() { yield 'NO' } } })
       assert.deepEqual(await records(), before)
       assert.equal((await status()).view, null)
       const result = await cli('capture', '--all', '--output', resolve(dataDir, 'restarted.png'))
       assert((await readFile(result.image)).length > 1000)
     })
+    run.report.status = 'passed'
+  } catch (error) {
+    run.report.status = 'failed'; run.report.error = String(error).slice(0, 1200)
+    for (const context of browser.contexts()) {
+      for (const page of context.pages()) await page.screenshot({ path: resolve(run.dir, 'failure.png') }).catch(() => {})
+      await context.tracing.stop({ path: resolve(run.dir, 'failure-trace.zip') }).catch(() => {})
+    }
+    throw error
   } finally {
+    await cli('backup', '--output', resolve(run.dir, 'board.tldr')).then((result) => { run.report.artifacts.backup = result.backup }).catch(() => {})
     await browser.close()
     await app.close()
     await rm(dataDir, { recursive: true, force: true })
+    run.report.finishedAt = new Date().toISOString(); await run.save()
   }
 })
