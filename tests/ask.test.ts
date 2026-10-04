@@ -31,13 +31,13 @@ test('custom prompts include brevity and preserve a typed question', () => {
 
 test('structured question answers require a transcription and render only answer text', () => {
   const reply = JSON.stringify({ question: 'What is a monad?', answer: '  A monad composes computations while carrying a context.  ' })
-  assert.equal(parseQuestionAnswer(reply), 'A monad composes computations while carrying a context.')
-  assert.equal(parseQuestionAnswer(`\`\`\`json\n${reply}\n\`\`\``), parseQuestionAnswer(reply))
+  assert.deepEqual(parseQuestionAnswer(reply), { question: 'What is a monad?', answer: 'A monad composes computations while carrying a context.' })
+  assert.deepEqual(parseQuestionAnswer(`\`\`\`json\n${reply}\n\`\`\``), parseQuestionAnswer(reply))
   for (const invalid of ['2', '{', '{}', '{"question":"","answer":"2"}', '{"question":"What?","answer":" "}', '{"question":1,"answer":"2"}']) {
     assert.throws(() => parseQuestionAnswer(invalid))
   }
   const long = 'A useful explanation. '.repeat(30)
-  assert.equal(parseQuestionAnswer(JSON.stringify({ question: 'Explain this.', answer: long })), long.trim(), 'parse the complete JSON before applying the answer limit')
+  assert.equal(parseQuestionAnswer(JSON.stringify({ question: 'Explain this.', answer: long })).answer, long.trim(), 'parse the complete JSON before applying the answer limit')
 })
 
 test('default replies answer the message instead of grading the handwriting', () => {

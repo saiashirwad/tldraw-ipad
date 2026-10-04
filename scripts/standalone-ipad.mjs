@@ -38,7 +38,8 @@ async function command(name, program, args, quiet = false) {
 
 try {
   if (!/^[A-Za-z0-9-]{1,80}$/.test(boardID)) throw new Error('Use a bounded alphanumeric standalone board ID')
-  if (!['render', 'stability', 'question', 'questions', 'live'].includes(scenario)) throw new Error('Choose render, stability, question, questions, or live (an alias for question)')
+  if (!['render', 'stability', 'question', 'questions', 'live', 'answer-controls'].includes(scenario)) throw new Error('Choose render, stability, question, questions, answer-controls, or live (an alias for question)')
+  if (scenario === 'answer-controls' && !options.includes('--board')) throw new Error('Answer controls require --board from a completed questions run')
   await mkdir(runDir, { recursive: true })
   if (!options.includes('--skip-install')) await command('install', 'bash', ['scripts/run-ipad.sh', device, '--install-only'])
   if (options.includes('--provision')) {

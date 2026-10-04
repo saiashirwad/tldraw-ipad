@@ -12,7 +12,7 @@ export function markerIsCurrent(editor: Editor, marker: QuestionMarker) {
 }
 
 /** One SDK undo restores the exact question-mark strokes and removes the complete answer. */
-export function replaceQuestionMarker(editor: Editor, marker: QuestionMarker, text: string, id = createShapeId()) {
+export function replaceQuestionMarker(editor: Editor, marker: QuestionMarker, text: string, id = createShapeId(), question?: string) {
   if (!text.trim() || !markerIsCurrent(editor, marker)) return null
   const zoom = editor.getZoomLevel()
   const scale = 20 / (18 * zoom)
@@ -22,7 +22,7 @@ export function replaceQuestionMarker(editor: Editor, marker: QuestionMarker, te
     editor.deleteShapes(marker.ink.map((shape) => shape.id))
     editor.createShapes([{
       id, type: 'text', x: marker.bounds.x, y: marker.bounds.y,
-      meta: { agentAnswer: true, questionMarkInk: JSON.parse(JSON.stringify(marker.ink)) },
+      meta: { agentAnswer: true, questionMarkInk: JSON.parse(JSON.stringify(marker.ink)), ...(question ? { questionTranscription: question } : {}) },
       props: { richText: toRichText(text.trim()), size: 's', font: 'sans', color: 'black', scale,
         autoSize: false, w: width / (scale * zoom) },
     }])
@@ -40,18 +40,44 @@ export function replaceQuestionMarker(editor: Editor, marker: QuestionMarker, te
   return id
 }
 
+/** Restore only this answer's original ink; the SDK history retains the surrounding work. */
+export function restoreQuestionMarker(editor: Editor, answerId: TLShapeId) {
+  const answer = editor.getShape(answerId)
+  if (!answer?.meta.agentAnswer || editor.getIsReadonly() || answer.isLocked) throw new Error('This answer cannot be restored.')
+  const saved = answer.meta.questionMarkInk
+  if (!Array.isArray(saved) || !saved.length) throw new Error('The original question mark is unavailable.')
+  const ink = saved.map((value) => {
+    const record = editor.store.schema.types.shape.validate(value)
+    if (record.typeName !== 'shape' || record.type !== 'draw') throw new Error('The saved marker ink is invalid.')
+    return record
+  })
+  const ids = new Set(ink.map((shape) => shape.id))
+  if (ids.size !== ink.length || ink.some((shape) => shape.type !== 'draw' || editor.getShape(shape.id))) {
+    throw new Error('The original question mark IDs are occupied. Nothing was changed.')
+  }
+  if (ink.some((shape) => !editor.store.get(shape.parentId) || shape.parentId === answerId)) {
+    throw new Error('The question mark’s original parent is missing. Nothing was changed.')
+  }
+  editor.markHistoryStoppingPoint('restore-question-mark')
+  editor.run(() => { editor.deleteShapes([answerId]); editor.createShapes(ink) })
+  editor.markHistoryStoppingPoint('restore-question-mark-complete')
+}
+
 /** Local pen/mouse input only: sync, page loads, CLI drawing, undo, and agent replies cannot trigger it. */
 export function installQuestionTrigger(editor: Editor, options: {
   enabled(): boolean
   busy(): boolean
-  onCandidate(marker: QuestionMarker, controller: AbortController): Promise<void>
+  onCandidate(marker: QuestionMarker, controller: AbortController, waitForInput: () => Promise<void>): Promise<void>
 }) {
   const recent = new Map<string, { shape: TLDrawShape; at: number }>()
   const changed = new Set<string>()
   const tried = new Set<string>()
+  const pending = new Map<string, QuestionMarker>()
   const pointers = new Set<number>()
   const pens = new Set<number>()
   const owned = new Set<TLShapeId>()
+  const idleWaiters = new Set<() => void>()
+  const settleIdle = () => { if (!pointers.size && !pens.size) for (const settle of idleWaiters) settle() }
   let drawingEvent = false
   let timer: ReturnType<typeof setTimeout> | undefined
   let active: AbortController | null = null
@@ -63,14 +89,20 @@ export function installQuestionTrigger(editor: Editor, options: {
   const interrupt = (reason: string) => { clearTimer(); active?.abort(reason) }
   const schedule = () => {
     clearTimer()
-    if (disposed || pointers.size || pens.size || !changed.size || !options.enabled()) return
+    for (const [key, marker] of pending) {
+      if (marker.ink.some((shape) => JSON.stringify(editor.getShape(shape.id)) !== JSON.stringify(shape))) pending.delete(key)
+    }
+    if (disposed || pointers.size || pens.size || !options.enabled()) return
+    const visible = (shape: TLShape) => editor.getShapePageBounds(shape)?.collides(editor.getViewportPageBounds())
+    const newInk = [...changed].some((id) => { const entry = recent.get(id); return entry && visible(entry.shape) })
+    const waiting = !active && [...pending.values()].some((marker) => marker.pageId === editor.getCurrentPageId() && marker.ink.some(visible))
+    if (!newInk && !waiting) return
     timer = setTimeout(() => { void inspect() }, Math.max(0, liftedAt + QUESTION_IDLE_MS - Date.now()))
   }
 
   async function inspect() {
     timer = undefined
-    if (disposed || pointers.size || pens.size || active || !options.enabled() || document.visibilityState !== 'visible') return
-    if (options.busy()) { timer = setTimeout(() => { void inspect() }, 250); return }
+    if (disposed || pointers.size || pens.size || !options.enabled() || document.visibilityState !== 'visible') return
     for (const [id, entry] of recent) {
       if (!editor.getShape(entry.shape.id)) { recent.delete(id); changed.delete(id) }
     }
@@ -83,32 +115,45 @@ export function installQuestionTrigger(editor: Editor, options: {
         b64Vecs.decodePoints(segment.path, segment.dim).map((p) => transform.applyToPoint({ x: p.x * shape.props.scaleX, y: p.y * shape.props.scaleY }))) }
     })
     const candidates = findQuestionMarks(strokes, changed, editor.getZoomLevel())
-    changed.clear()
-    for (const candidate of candidates.slice(0, 4)) {
-      if (disposed || pointers.size || options.busy() || !options.enabled()) break
+    for (const { shape } of entries) changed.delete(shape.id)
+    for (const candidate of candidates) {
       const ink = candidate.ids.flatMap((id) => recent.get(id)?.shape ?? [])
       if (ink.length !== candidate.ids.length) continue
       const marker: QuestionMarker = { ...candidate, pageId: editor.getCurrentPageId(), ink }
       const fingerprint = JSON.stringify(ink)
-      if (tried.has(fingerprint) || !markerIsCurrent(editor, marker)) continue
-      const controller = new AbortController()
-      active = controller
-      try {
-        await options.onCandidate(marker, controller)
-      } finally {
-        if (controller.signal.aborted && controller.signal.reason === 'input') {
-          // A new stroke interrupted recognition: retry this still-intact mark after the next pause.
-          for (const shape of ink) if (editor.getShape(shape.id)) changed.add(shape.id)
-        } else {
-          // Stop also suppresses retry, so an unchanged mark cannot immediately start again.
-          tried.add(fingerprint)
-          if (tried.size > 256) tried.delete(tried.values().next().value!)
-        }
-        if (active === controller) active = null
-      }
-      if (controller.signal.aborted) break
+      if (tried.has(fingerprint) || !markerIsCurrent(editor, marker) || pending.has(fingerprint)) continue
+      pending.set(fingerprint, marker)
     }
-    if (changed.size) schedule()
+    if (active || options.busy()) return
+    for (const [key, marker] of pending) {
+      if (marker.pageId === editor.getCurrentPageId() && !markerIsCurrent(editor, marker)) pending.delete(key)
+    }
+    const next = [...pending].find(([, marker]) => marker.pageId === editor.getCurrentPageId() &&
+      marker.ink.some((shape) => editor.getShapePageBounds(shape)?.collides(editor.getViewportPageBounds())))
+    if (!next) return
+    const [fingerprint, marker] = next
+    const controller = new AbortController()
+    active = controller
+    try {
+      await options.onCandidate(marker, controller, () => new Promise<void>((resolve, reject) => {
+        if (controller.signal.aborted) { reject(new DOMException('Cancelled', 'AbortError')); return }
+        const settle = () => { idleWaiters.delete(settle); controller.signal.removeEventListener('abort', abort); resolve() }
+        const abort = () => { idleWaiters.delete(settle); reject(new DOMException('Cancelled', 'AbortError')) }
+        idleWaiters.add(settle)
+        controller.signal.addEventListener('abort', abort, { once: true })
+        settleIdle()
+      }))
+    } finally {
+      if (controller.signal.aborted && controller.signal.reason === 'context-changed' && markerIsCurrent(editor, marker)) {
+        liftedAt = Date.now()
+      } else {
+        pending.delete(fingerprint)
+        tried.add(fingerprint)
+        if (tried.size > 256) tried.delete(tried.values().next().value!)
+      }
+      if (active === controller) active = null
+      schedule()
+    }
   }
 
   const remember = (shape: TLShape) => {
@@ -149,7 +194,7 @@ export function installQuestionTrigger(editor: Editor, options: {
     if (event.type !== 'pointer') return
     if (editor.getInstanceState().isPenMode && !event.isPen) return
     if (event.name === 'pointer_down') {
-      interrupt('input')
+      clearTimer()
       if (event.button === 0 && editor.getCurrentToolId() === 'draw' && !editor.getIsReadonly()) pens.add(event.pointerId)
     }
     drawingEvent = pens.has(event.pointerId) && editor.getCurrentToolId() === 'draw' &&
@@ -160,6 +205,7 @@ export function installQuestionTrigger(editor: Editor, options: {
     drawingEvent = false
     if (event.type === 'pointer' && event.name === 'pointer_up' && pens.delete(event.pointerId)) {
       liftedAt = Date.now()
+      settleIdle()
       schedule()
     } else if (event.type === 'misc' && event.name === 'cancel') {
       interrupt('cancel')
@@ -170,14 +216,15 @@ export function installQuestionTrigger(editor: Editor, options: {
   editor.on('event', afterEvent)
 
   const down = (event: PointerEvent) => {
-    if ((event.target as Element | null)?.closest('.tools, .history, .tlui')) return
+    if ((event.target as Element | null)?.closest('.tools, .history, .tlui, .question-controls')) return
     if (event.pointerType === 'touch' && editor.getInstanceState().isPenMode) return
     pointers.add(event.pointerId)
-    interrupt('input')
+    clearTimer()
   }
   const up = (event: PointerEvent) => {
     if (!pointers.delete(event.pointerId)) return
     liftedAt = Date.now()
+    settleIdle()
     schedule()
   }
   const blur = () => { interrupt('blur'); pointers.clear(); pens.clear(); drawingEvent = false }

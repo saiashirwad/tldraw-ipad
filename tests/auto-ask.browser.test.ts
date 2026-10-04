@@ -44,7 +44,7 @@ async function fixture(t: TestContext, recognition = scripted('YES'), answer = s
   t.after(async () => { await session.close(); run.report.finishedAt = new Date().toISOString(); await run.save() })
   await session.human.reload()
   await session.human.waitForFunction(() => !!window.canvas)
-  await session.human.evaluate(() => window.canvas.editor.setCamera({ x: 0, y: 0, z: 1 }))
+  await session.human.evaluate(() => { window.canvas.editor.setCamera({ x: 0, y: 0, z: 1 }) })
   return { ...session, page: session.human, base: session.url, recognition, answer }
 }
 
@@ -67,7 +67,7 @@ const ink = (page: Page) => page.evaluate(() => JSON.stringify(window.canvas.edi
 const answers = (page: Page) => page.evaluate(() => window.canvas.editor.getCurrentPageShapes()
   .filter((shape) => shape.meta.agentAnswer).map((shape) => window.canvas.editor.getShapeUtil(shape).getText(shape)))
 
-test('Pencil lift answers with a resting palm and only new writing interrupts it', { timeout: 30000 }, async (t) => {
+test('Pencil lift answers with a resting palm and nearby writing interrupts it', { timeout: 30000 }, async (t) => {
   const answer = scripted('2', true)
   const session = await fixture(t, scripted('YES'), answer)
   await session.page.evaluate(() => window.canvas.editor.updateInstanceState({ isPenMode: true }))
@@ -94,9 +94,9 @@ test('Pencil lift answers with a resting palm and only new writing interrupts it
   await pause(200)
   assert.equal(answer.calls[0].signal?.aborted, false, 'palm contact must not cancel an answer')
   assert.equal(await ink(session.page), original)
-  await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: 650, y: 400, button: 'left', buttons: 1, pointerType: 'pen', force: .5 })
-  await eventually(() => !!answer.calls[0].signal?.aborted, 'new Pencil writing must cancel the answer')
-  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 650, y: 400, button: 'left', buttons: 0, pointerType: 'pen', force: 0 })
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: 300, y: 250, button: 'left', buttons: 1, pointerType: 'pen', force: .5 })
+  await eventually(() => !!answer.calls[0].signal?.aborted, 'new nearby Pencil writing must cancel the answer')
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 300, y: 250, button: 'left', buttons: 0, pointerType: 'pen', force: 0 })
   await eventually(() => answer.calls.length === 2, 'the intact marker must retry after the next Pencil lift')
   answer.release()
   await session.page.waitForFunction(() => window.canvas.editor.getCurrentPageShapes().some((shape) => shape.meta.agentAnswer))
@@ -216,15 +216,15 @@ test('blur during recognition preserves ink and suppresses immediate retry', { t
   assert.equal(session.answer.calls.length, 0)
 })
 
-test('new local input interrupts an answer without erasing its question marker', { timeout: 20000 }, async (t) => {
+test('new nearby writing interrupts an answer without erasing its question marker', { timeout: 20000 }, async (t) => {
   const answer = scripted('2', true)
   const session = await fixture(t, scripted('YES'), answer)
   await drawQuestion(session.page)
   const original = JSON.parse(await ink(session.page))
   await eventually(() => answer.calls.length === 1, 'answer should start')
-  await session.page.mouse.move(650, 400)
+  await session.page.mouse.move(280, 240)
   await session.page.mouse.down()
-  await session.page.mouse.move(700, 400, { steps: 5 })
+  await session.page.mouse.move(330, 240, { steps: 5 })
   await session.page.mouse.up()
   await eventually(() => !!answer.calls[0].signal?.aborted, 'new input must abort the active answer')
   answer.release()
@@ -270,4 +270,195 @@ test('remote sync and CLI question-shaped ink never trigger recognition', { time
   assert.equal(session.recognition.calls.length, 0)
   assert.equal(session.answer.calls.length, 0)
   assert.deepEqual(await answers(session.page), [])
+})
+
+test('recognition keeps the original visible image through pan and continued outside writing', { timeout: 25000 }, async (t) => {
+  const recognition = scripted('YES', true)
+  const answer = scripted('2', true)
+  const session = await fixture(t, recognition, answer)
+  await session.page.evaluate(() => {
+    const editor = window.canvas.editor
+    const original = editor.toImageDataUrl.bind(editor)
+    const exports: { bounds: unknown; url?: string }[] = []
+    Object.assign(window, { questionExports: exports })
+    editor.toImageDataUrl = async (shapes, options) => {
+      const item: { bounds: unknown; url?: string } = { bounds: JSON.parse(JSON.stringify(options?.bounds)) }
+      exports.push(item)
+      const result = await original(shapes, options)
+      item.url = result.url
+      return result
+    }
+  })
+  await drawQuestion(session.page)
+  await eventually(() => recognition.calls.length === 1, 'recognition starts after both images are captured')
+  assert.equal(await session.page.locator('.question-progress').textContent(), 'Reading…×')
+  await session.page.evaluate(() => { window.canvas.editor.setCamera({ x: 500, y: 0, z: 1 }) })
+  await session.page.mouse.move(900, 500); await session.page.mouse.down(); await session.page.mouse.move(960, 500); await session.page.mouse.up()
+  await pause(100)
+  assert.equal(recognition.calls[0].signal?.aborted, false, 'pan and writing outside the fixed local area may continue')
+  recognition.release()
+  await eventually(() => answer.calls.length === 1, 'the answer starts with the already-captured context')
+  const captured = await session.page.evaluate(() => (window as unknown as { questionExports: { bounds: { x: number; y: number; w: number; h: number } }[] }).questionExports)
+  assert.equal(captured.length, 2, 'no image is exported again after recognition')
+  assert.equal(captured[1].bounds.x, 0, 'full context uses the viewport at marker lift')
+  assert.equal(await session.page.locator('.question-progress').textContent(), 'Answering…×')
+  answer.release()
+  await session.page.waitForFunction(() => window.canvas.editor.getCurrentPageShapes().some((shape) => shape.meta.agentAnswer))
+  assert.equal(await session.page.evaluate(() => window.canvas.editor.getCurrentPageShapes().filter((shape) => shape.type === 'draw').length), 1)
+})
+
+test('explicit cancel preserves the marker and suppresses an unchanged retry', { timeout: 20000 }, async (t) => {
+  const answer = scripted('2', true)
+  const session = await fixture(t, scripted('YES'), answer)
+  await drawQuestion(session.page)
+  const original = await ink(session.page)
+  await eventually(() => answer.calls.length === 1, 'answer starts')
+  await session.page.getByRole('button', { name: 'Cancel answer' }).click()
+  await eventually(() => !!answer.calls[0].signal?.aborted, 'cancel reaches provider')
+  await session.page.mouse.move(650, 500); await session.page.mouse.down(); await session.page.mouse.move(700, 500); await session.page.mouse.up()
+  await pause(QUESTION_IDLE_MS + 250)
+  assert.equal(session.recognition.calls.length, 1)
+  assert.equal(answer.calls.length, 1)
+  for (const shape of JSON.parse(original)) assert.deepEqual(JSON.parse(await ink(session.page)).find((current: { id: string }) => current.id === shape.id), shape)
+})
+
+test('a later outside marker survives recent-ink eviction and resumes after panning back', { timeout: 35000 }, async (t) => {
+  const answer = scripted('2', true)
+  const session = await fixture(t, scripted('YES'), answer)
+  await drawQuestion(session.page)
+  await eventually(() => answer.calls.length === 1, 'first answer starts')
+  await drawQuestion(session.page, 300)
+  await pause(QUESTION_IDLE_MS + 100)
+  assert.equal(answer.calls[0].signal?.aborted, false)
+  assert.equal(answer.calls.length, 1)
+  await session.page.evaluate(() => {
+    const editor = window.canvas.editor
+    for (let index = 0; index < 132; index++) {
+      const event = { type: 'pointer' as const, target: 'canvas' as const, pointerId: 100, isPen: false, button: 0,
+        shiftKey: false, altKey: false, ctrlKey: false, metaKey: false, accelKey: false }
+      editor.dispatch({ ...event, name: 'pointer_down', point: { x: 650, y: 650, z: .5 } })
+      editor.dispatch({ ...event, name: 'pointer_move', point: { x: 700, y: 650, z: .5 } })
+      editor.dispatch({ ...event, name: 'pointer_up', point: { x: 700, y: 650, z: .5 } })
+    }
+    editor.setCamera({ x: 0, y: 1000, z: 1 })
+  })
+  answer.release()
+  await session.page.waitForFunction(() => window.canvas.editor.getCurrentPageShapes().filter((shape) => shape.meta.agentAnswer).length === 1)
+  await pause(QUESTION_IDLE_MS + 100)
+  assert.equal(answer.calls.length, 1, 'offscreen pending marker waits without being discarded')
+  await session.page.evaluate(() => { window.canvas.editor.setCamera({ x: 0, y: 0, z: 1 }) })
+  await session.page.waitForFunction(() => window.canvas.editor.getCurrentPageShapes().filter((shape) => shape.meta.agentAnswer).length === 2)
+  assert.equal(session.recognition.calls.length, 2)
+  assert.equal(answer.calls.length, 2)
+})
+
+test('an edit undone during asynchronous export still invalidates the frozen request', { timeout: 20000 }, async (t) => {
+  const session = await fixture(t)
+  await session.page.evaluate(() => {
+    const editor = window.canvas.editor
+    const original = editor.toImageDataUrl.bind(editor)
+    let release: (() => void) | undefined
+    const gate = new Promise<void>((done) => { release = done })
+    Object.assign(window, { releaseQuestionExport: release, questionExportStarted: false })
+    editor.toImageDataUrl = async (shapes, options) => {
+      Object.assign(window, { questionExportStarted: true })
+      await gate
+      return original(shapes, options)
+    }
+  })
+  await drawQuestion(session.page)
+  await session.page.waitForFunction(() => (window as unknown as { questionExportStarted: boolean }).questionExportStarted)
+  await session.page.evaluate(() => {
+    const editor = window.canvas.editor
+    const shape = editor.getCurrentPageShapes().find((shape) => shape.type === 'draw')!
+    editor.markHistoryStoppingPoint('edit-during-export')
+    editor.updateShapes([{ id: shape.id, type: shape.type, x: shape.x + 10 }])
+    editor.undo()
+    window.dispatchEvent(new Event('blur'))
+    ;(window as unknown as { releaseQuestionExport(): void }).releaseQuestionExport()
+  })
+  await pause(200)
+  assert.equal(session.recognition.calls.length, 0, 'invalidated images never reach recognition')
+  assert.deepEqual(await answers(session.page), [])
+})
+
+test('restoration refuses occupied marker IDs without changing any document record', { timeout: 20000 }, async (t) => {
+  const session = await fixture(t)
+  await drawQuestion(session.page)
+  await session.page.waitForFunction(() => window.canvas.editor.getCurrentPageShapes().some((shape) => shape.meta.agentAnswer))
+  const before = await session.page.evaluate(() => {
+    const editor = window.canvas.editor
+    const answer = editor.getCurrentPageShapes().find((shape) => shape.meta.agentAnswer)!
+    const ink = answer.meta.questionMarkInk as unknown as Parameters<typeof editor.createShapes>[0]
+    editor.createShapes([ink[0]])
+    editor.select(answer.id)
+    return JSON.stringify(editor.getCurrentPageShapes().sort((a, b) => a.id.localeCompare(b.id)))
+  })
+  await session.page.getByRole('button', { name: 'Restore question mark' }).click()
+  assert.match(await session.page.getByRole('alert').textContent() ?? '', /occupied/)
+  assert.equal(await session.page.evaluate(() => JSON.stringify(window.canvas.editor.getCurrentPageShapes().sort((a, b) => a.id.localeCompare(b.id)))), before)
+})
+
+test('finger tap inspects an answer while pan, palm, Pencil, and pointer cancel do not', { timeout: 25000 }, async (t) => {
+  const session = await fixture(t)
+  await drawQuestion(session.page)
+  await session.page.waitForFunction(() => window.canvas.editor.getCurrentPageShapes().some((shape) => shape.meta.agentAnswer))
+  await session.page.addInitScript({ content: `Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 5 })` })
+  const syncedAt = Date.now() + 5000
+  let saved = JSON.stringify(await session.snapshot())
+  while (!saved.includes('agentAnswer') && Date.now() < syncedAt) { await pause(25); saved = JSON.stringify(await session.snapshot()) }
+  assert(saved.includes('agentAnswer'), 'answer replacement must reach the sync document before reload')
+  await session.page.reload()
+  await session.page.waitForFunction(() => !!window.canvas)
+  await session.page.waitForFunction(() => window.canvas.editor.getCurrentPageShapes().some((shape) => shape.meta.agentAnswer))
+  const point = await session.page.evaluate(() => {
+    const editor = window.canvas.editor
+    const answer = editor.getCurrentPageShapes().find((shape) => shape.meta.agentAnswer)!
+    return editor.pageToScreen(editor.getShapePageBounds(answer)!.center)
+  })
+  const canvas = session.page.locator('.tl-canvas')
+  const pointer = { pointerType: 'touch', pointerId: 71, clientX: point.x, clientY: point.y, button: 0, width: 10, height: 10 }
+  const tap = async (override = {}) => {
+    await canvas.dispatchEvent('pointerdown', { ...pointer, buttons: 1, ...override })
+    await canvas.dispatchEvent('pointerup', { ...pointer, buttons: 0, ...override })
+  }
+  await tap({ width: 70, height: 70 })
+  assert.equal(await session.page.getByRole('dialog').count(), 0, 'palm must not inspect')
+  await canvas.dispatchEvent('pointerdown', { ...pointer, buttons: 1 })
+  await canvas.dispatchEvent('pointercancel', { ...pointer, buttons: 0 })
+  assert.equal(await session.page.getByRole('dialog').count(), 0, 'cancelled pointer must not inspect')
+  await canvas.dispatchEvent('pointerdown', { ...pointer, buttons: 1 })
+  await canvas.dispatchEvent('pointermove', { ...pointer, clientX: point.x + 20, buttons: 1 })
+  await canvas.dispatchEvent('pointerup', { ...pointer, clientX: point.x + 20, buttons: 0 })
+  assert.equal(await session.page.getByRole('dialog').count(), 0, 'pan must not inspect')
+  await tap({ pointerType: 'pen', clientX: 900, clientY: 600 })
+  assert.equal(await session.page.getByRole('dialog').count(), 0, 'Pencil must not inspect')
+  await pause(250)
+  await tap({ clientX: point.x + 20 })
+  await session.page.getByRole('dialog', { name: 'Answer details' }).waitFor()
+  assert.equal(await session.page.evaluate(() => window.canvas.editor.getCurrentToolId()), 'draw', 'inspection does not change the drawing tool')
+  await tap({ clientX: 900, clientY: 600 })
+  assert.equal(await session.page.getByRole('dialog').count(), 0, 'continuing elsewhere dismisses the inspector')
+})
+
+test('a ready answer waits for the outside stroke to finish so undo never leaves partial ink', { timeout: 22000 }, async (t) => {
+  const answer = scripted('2', true)
+  const session = await fixture(t, scripted('YES'), answer)
+  await drawQuestion(session.page)
+  const markerInk = await ink(session.page)
+  await eventually(() => answer.calls.length === 1, 'answer starts')
+  await session.page.mouse.move(650, 600); await session.page.mouse.down(); await session.page.mouse.move(700, 600)
+  answer.release()
+  await pause(200)
+  assert.deepEqual(await answers(session.page), [], 'complete answer waits while the human stroke remains active')
+  await session.page.mouse.move(750, 600); await session.page.mouse.up()
+  await session.page.waitForFunction(() => window.canvas.editor.getCurrentPageShapes().some((shape) => shape.meta.agentAnswer))
+  const stroke = await ink(session.page)
+  assert.equal(JSON.parse(stroke)[0].props.isComplete, true)
+  await session.page.getByRole('button', { name: 'Undo', exact: true }).click()
+  assert.deepEqual(await answers(session.page), [])
+  const restored = JSON.parse(await ink(session.page))
+  for (const shape of [...JSON.parse(markerInk), ...JSON.parse(stroke)]) assert.deepEqual(restored.find((current: { id: string }) => current.id === shape.id), shape)
+  await session.page.getByRole('button', { name: 'Undo', exact: true }).click()
+  assert.equal(await ink(session.page), markerInk, 'the next undo removes the entire outside stroke')
 })

@@ -83,3 +83,23 @@ Throughput checkpoint. Native root-cause evidence gates the rendering fix. Input
 Throughput checkpoint. Model evidence gates prompt and capture changes. Answer implementation and sequential device verification use isolated worktrees. Root alone installs on the device and edits its saved board. The original document is retained as an editable backup.
 
 Final answer repair evidence. Full suite47/47 passed (1791119201039-a85676cd). Native live sequential questions passed (standalone-1791119201668), including nonoverlap and exact Undo/Redo. Original handwriting replay returned relevant monad and life explanations. Existing bad replies repaired with revision guards and SDK edits; new user strokes preserved. Added current UTC date to each native/LAN request; corrected stale age reply from official birth date. Human Pencil input occurred during the session but was not a controlled physical test.
+
+## Quiet question collaboration
+
+- [x] Ground. Trace trigger, asynchronous capture, native attempts, shape metadata, and undo from the current app.
+- [x] Frame. Preserve automatic Pencil questions while making each request visible, stable, cancellable, and individually reversible.
+- [x] Fan out. Compare a bounded request object with a shape-cohort design.
+- [x] Cross-judge. Review cancellation, capture consistency, low-chrome UI, durable reversal, and complexity.
+- [x] Pick and graft. Save the chosen interfaces before implementation.
+- [x] Agree. Proceed under the user's agreement to the proposed next interaction.
+- [x] Implement. One isolated owner for the coupled request lifecycle and contextual UI.
+- [x] Verify. Final full suite passed 54/54 (1791121466634-61bf42c2); isolated native live answers and reload controls passed; everyday board preserved.
+- [x] Scrap. Keep the request design; remove the arbitrary pending-queue cap after review exposed offscreen starvation.
+
+Throughput checkpoint:
+- Blocking first steps: source grounding and request-boundary design before implementation.
+- Independent workstreams: read-only design candidates run independently; root owns review and device operation.
+- Shared mutable state: implementation uses an isolated worktree; only root integrates and installs.
+- Smallest safe decomposition: one implementation owner because trigger, context, metadata, and UI share one lifecycle contract.
+
+Quiet question device evidence. Live native sequential questions and saved transcriptions passed (standalone-1791121419224). Reloaded answer controls passed exact restoration, preservation of later notes, no automatic retry, and one-step undo (standalone-1791121466186). A first live run repeated the prior monad answer for the life question despite structural checks passing; tighten question targeting and require matching saved transcription in the native verifier. Everyday board matched its pre-install backup exactly. Physical Pencil input remains unverified.

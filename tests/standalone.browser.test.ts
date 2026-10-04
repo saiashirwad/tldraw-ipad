@@ -143,6 +143,26 @@ test('standalone Pi Durable answers without Mac APIs and persists ink, transcrip
     assert.equal(secondPayload.messages.flatMap((message) => typeof message.content === 'string' ? [] : message.content)
       .filter((part) => part.type === 'image_url').length, 1, 'only the current screenshot reaches the provider')
     assert((await readFile(resolve(files, 'answers/main.jsonl'), 'utf8')).startsWith(firstJournal), 'reset preserves the existing journal')
+    await page.mouse.move(90, 600); await page.mouse.down(); await page.mouse.move(200, 600); await page.mouse.up()
+    await page.waitForTimeout(300)
+    await page.reload()
+    await page.waitForFunction(() => !!window.canvas)
+    const savedAnswer: { id: string; meta: { questionTranscription: string; questionMarkInk: { id: string }[] } } = JSON.parse(await page.evaluate(() => JSON.stringify(window.canvas.editor.getCurrentPageShapes().find((shape) => shape.meta.agentAnswer)!)))
+    assert.equal(savedAnswer.meta.questionTranscription, 'What is 1 + 1?')
+    const otherShapes = await page.evaluate((id) => JSON.stringify(window.canvas.editor.getCurrentPageShapes().filter((shape) => shape.id !== id).sort((a, b) => a.id.localeCompare(b.id))), savedAnswer.id)
+    await page.evaluate((id) => { const shape = window.canvas.editor.getCurrentPageShapes().find((shape) => shape.id === id)!; window.canvas.editor.select(shape.id) }, savedAnswer.id)
+    assert.equal(await page.locator('.question-transcription').textContent(), 'Read asWhat is 1 + 1?')
+    await page.getByRole('button', { name: 'Restore question mark' }).click()
+    assert.equal(await page.evaluate(() => window.canvas.editor.getCurrentPageShapes().filter((shape) => shape.meta.agentAnswer).length), 0)
+    for (const shape of savedAnswer.meta.questionMarkInk as { id: string }[]) {
+      assert.deepEqual(await page.evaluate((id) => window.canvas.editor.getCurrentPageShapes().find((shape) => shape.id === id), shape.id), shape)
+    }
+    const markerIds = (savedAnswer.meta.questionMarkInk as { id: string }[]).map((shape) => shape.id)
+    assert.equal(await page.evaluate((ids) => JSON.stringify(window.canvas.editor.getCurrentPageShapes().filter((shape) => !ids.includes(shape.id)).sort((a, b) => a.id.localeCompare(b.id))), markerIds), otherShapes)
+    await page.waitForTimeout(900)
+    assert.equal(requests.length, 4, 'restoring original ink does not submit another question')
+    await page.getByRole('button', { name: 'Undo', exact: true }).click()
+    assert.deepEqual(await page.evaluate((id) => window.canvas.editor.getCurrentPageShapes().find((shape) => shape.id === id), savedAnswer.id), savedAnswer, 'one undo reverses targeted restoration')
     held = 'all'
     gate = new Promise<void>((done) => { release = done })
     await drawQuestion(480)
@@ -150,12 +170,33 @@ test('standalone Pi Durable answers without Mac APIs and persists ink, transcrip
     const deadline = Date.now() + 5000
     while (requests.length < 5 && Date.now() < deadline) await new Promise((done) => setTimeout(done, 25))
     assert.equal(requests.length, 5)
-    await page.mouse.move(800, 500); await page.mouse.down(); await page.mouse.move(850, 500); await page.mouse.up()
+    await page.getByRole('button', { name: 'Cancel answer' }).click()
     const cancelledDeadline = Date.now() + 5000
     while (!requests[4].cancelled && Date.now() < cancelledDeadline) await new Promise((done) => setTimeout(done, 25))
-    assert(requests[4].cancelled, 'new input cancels the native provider request')
+    assert(requests[4].cancelled, 'explicit cancel stops the native provider request')
     await page.waitForTimeout(200)
     assert.equal(await page.evaluate(() => window.canvas.editor.getCurrentPageShapes().filter((shape) => shape.meta.agentAnswer).length), 1)
+    const attemptPath = resolve(files, 'attempt.json')
+    let interrupted = JSON.parse(await readFile(attemptPath, 'utf8'))
+    const cancelledAt = Date.now() + 3000
+    while (interrupted.phase !== 'cancelled' && Date.now() < cancelledAt) {
+      await page.waitForTimeout(25)
+      interrupted = JSON.parse(await readFile(attemptPath, 'utf8'))
+    }
+    assert.equal(interrupted.phase, 'cancelled')
+    await page.evaluate((markerIds: string[]) => {
+      const editor = window.canvas.editor
+      const source = editor.getCurrentPageShapes().find((shape) => shape.type === 'draw' && !markerIds.includes(shape.id))!
+      editor.updateShapes([{ id: source.id, type: source.type, x: source.x + 25 }])
+    }, interrupted.markerIds)
+    await page.waitForTimeout(300)
+    const beforeRecovery = await page.evaluate(() => JSON.stringify(window.canvas.editor.getCurrentPageShapes().sort((a, b) => a.id.localeCompare(b.id))))
+    await writeFile(attemptPath, JSON.stringify({ ...interrupted, phase: 'ready', question: 'What is 3 + 3?', text: '6' }))
+    await page.reload()
+    await page.waitForFunction(() => !!window.canvas)
+    await page.waitForTimeout(300)
+    assert.equal(JSON.parse(await readFile(attemptPath, 'utf8')).phase, 'cancelled', 'ready recovery rejects changed context even with an intact marker')
+    assert.equal(await page.evaluate(() => JSON.stringify(window.canvas.editor.getCurrentPageShapes().sort((a, b) => a.id.localeCompare(b.id)))), beforeRecovery)
     assert.deepEqual(apiRequests, [])
     run.report.status = 'passed'
   } catch (error) {

@@ -3,17 +3,16 @@ import { createModels, type Provider } from '@earendil-works/pi-ai/models'
 import { deepseekProvider } from '@earendil-works/pi-ai/providers/deepseek'
 import { AssistantEntry, Harness, createRegistry, type Conversation } from '@earendil-works/pi-durable'
 import { JsonlStorage } from '@earendil-works/pi-durable/storage/jsonl'
-import { Box, createShapeId, type Editor, type TLDrawShape } from 'tldraw'
+import { createShapeId, type Editor, type TLDrawShape } from 'tldraw'
 import { markerIsCurrent, replaceQuestionMarker, type QuestionMarker } from './auto-ask'
 import { CANVAS_INPUT_RULES, CANVAS_REPLY_RULES, MAX_ANSWER_CHARS, QUESTION_ANSWER_PROMPT, parseQuestionAnswer } from './ask-prompts'
-import { markQuestionInCapture } from './question-capture'
-import { captureLocalView } from './local-board'
+import { questionContextIsCurrent, type QuestionContext, type QuestionPhase, type QuestionRequest } from './question-request'
 import { nativeFetch, nativeFileSystem, randomId, readNativeFile, writeNativeFile } from './native'
 
 type Attempt = {
   id: string; boardId: 'local'; pageId: string; markerFingerprint: string; markerIds: string[];
-  answerShapeId: string; bounds: { x: number; y: number; w: number; h: number }
-} & ({ phase: 'recognizing' | 'answering' | 'cancelled' | 'failed' | 'applied' } | { phase: 'ready'; text: string })
+  answerShapeId: string; context?: QuestionContext; bounds: { x: number; y: number; w: number; h: number }
+} & ({ phase: 'recognizing' | 'answering' | 'cancelled' | 'failed' | 'applied' } | { phase: 'ready'; text: string; question: string })
 
 function parseAttempt(text: string): Attempt {
   const value: unknown = JSON.parse(text)
@@ -26,7 +25,17 @@ function parseAttempt(text: string): Attempt {
     !('x' in value.bounds) || typeof value.bounds.x !== 'number' || !('y' in value.bounds) || typeof value.bounds.y !== 'number' ||
     !('w' in value.bounds) || typeof value.bounds.w !== 'number' || !('h' in value.bounds) || typeof value.bounds.h !== 'number' ||
     !('phase' in value) || !['recognizing', 'answering', 'ready', 'cancelled', 'failed', 'applied'].includes(String(value.phase)) ||
-    (value.phase === 'ready' && (!('text' in value) || typeof value.text !== 'string'))) throw new Error('Invalid saved question attempt. Ink is preserved.')
+    (value.phase === 'ready' && (!('text' in value) || typeof value.text !== 'string' || !('question' in value) || typeof value.question !== 'string'))) throw new Error('Invalid saved question attempt. Ink is preserved.')
+  if ('context' in value && value.context !== undefined) {
+    const saved = value.context
+    if (!saved || typeof saved !== 'object' || !('pageId' in saved) || typeof saved.pageId !== 'string' ||
+      !('records' in saved) || !saved.records || typeof saved.records !== 'object' || Array.isArray(saved.records) ||
+      !Object.values(saved.records).every((record) => typeof record === 'string') ||
+      !('area' in saved) || !saved.area || typeof saved.area !== 'object' ||
+      !['x', 'y', 'w', 'h'].every((key) => typeof (saved.area as Record<string, unknown>)[key] === 'number')) {
+      throw new Error('Invalid saved question context. Ink is preserved.')
+    }
+  }
   return value as Attempt
 }
 
@@ -82,39 +91,38 @@ export async function openCanvasAssistant(flushBoard: () => Promise<void>) {
         .sort((a, b) => attempt.markerIds.indexOf(a.id) - attempt.markerIds.indexOf(b.id))
       const marker: QuestionMarker = { ids: attempt.markerIds, bounds: attempt.bounds, pageId: editor.getCurrentPageId(), ink }
       if (editor.getCurrentPageShapes().some((shape) => shape.id === attempt.answerShapeId)) { await save({ ...attempt, phase: 'applied' }); return }
-      if (attempt.pageId !== marker.pageId || JSON.stringify(ink) !== attempt.markerFingerprint || !markerIsCurrent(editor, marker)) {
+      if (!attempt.context || !questionContextIsCurrent(editor, attempt.context) || attempt.pageId !== marker.pageId || JSON.stringify(ink) !== attempt.markerFingerprint || !markerIsCurrent(editor, marker)) {
         await save({ ...attempt, phase: 'cancelled' }); return
       }
-      replaceQuestionMarker(editor, marker, attempt.text, createShapeId(attempt.answerShapeId.slice(6)))
+      replaceQuestionMarker(editor, marker, attempt.text, createShapeId(attempt.answerShapeId.slice(6)), attempt.question)
       await flushBoard()
       await save({ ...attempt, phase: 'applied' })
     },
-    async answerMarker(editor: Editor, marker: QuestionMarker, signal: AbortSignal) {
+    async answerMarker(editor: Editor, request: QuestionRequest, signal: AbortSignal, progress: (phase: QuestionPhase) => void) {
+      const { marker } = request
       if (running || signal.aborted || !markerIsCurrent(editor, marker)) return
       running = true
       const id = randomId()
       let attempt: Attempt = { id, boardId: 'local', pageId: marker.pageId, markerFingerprint: JSON.stringify(marker.ink),
-        markerIds: marker.ink.map((shape) => shape.id), answerShapeId: createShapeId(), bounds: marker.bounds, phase: 'recognizing' }
+        context: request.context, markerIds: marker.ink.map((shape) => shape.id), answerShapeId: createShapeId(), bounds: marker.bounds, phase: 'recognizing' }
       try {
         await flushBoard(); await save(attempt)
         await recognition.conversation.reset(undefined, context)
-        const bounds = Box.From(marker.bounds).expandBy(6 / editor.getZoomLevel())
-        const glyph = await editor.toImageDataUrl(marker.ink.map((shape) => shape.id), { format: 'png', bounds, padding: 0,
-          background: true, darkMode: false, pixelRatio: 1, scale: 200 / Math.max(bounds.w, bounds.h) })
-        const checked = await ask(recognition.conversation, glyph.url, 'Is this a handwritten question mark? YES or NO.', `${id}-recognition`, signal)
-        if (checked !== 'YES' || signal.aborted || !markerIsCurrent(editor, marker)) { await save({ ...attempt, phase: 'cancelled' }); return }
+        progress('recognizing')
+        const checked = await ask(recognition.conversation, request.glyph, 'Is this a handwritten question mark? YES or NO.', `${id}-recognition`, signal)
+        if (checked !== 'YES' || signal.aborted || !markerIsCurrent(editor, marker) || !questionContextIsCurrent(editor, request.context)) { await save({ ...attempt, phase: 'cancelled' }); return }
         attempt = { ...attempt, phase: 'answering' }; await save(attempt)
-        const capture = await captureLocalView(editor)
-        if (!capture.bounds.includes(Box.From(marker.bounds))) { await save({ ...attempt, phase: 'cancelled' }); return }
-        const image = await markQuestionInCapture(capture, marker.bounds)
+        progress('answering')
         await answer.conversation.reset(undefined, context)
-        const reply = await ask(answer.conversation, image, `Current UTC date: ${new Date().toISOString().slice(0, 10)}.\n${QUESTION_ANSWER_PROMPT}`, `${id}-answer`, signal)
-        if (signal.aborted || !markerIsCurrent(editor, marker)) { await save({ ...attempt, phase: 'cancelled' }); return }
-        const text = parseQuestionAnswer(reply)
+        const reply = await ask(answer.conversation, request.image, `Current UTC date: ${new Date().toISOString().slice(0, 10)}.\n${QUESTION_ANSWER_PROMPT}`, `${id}-answer`, signal)
+        if (signal.aborted || !markerIsCurrent(editor, marker) || !questionContextIsCurrent(editor, request.context)) { await save({ ...attempt, phase: 'cancelled' }); return }
+        const { question, answer: text } = parseQuestionAnswer(reply)
         const brief = text.length > MAX_ANSWER_CHARS ? `${text.slice(0, MAX_ANSWER_CHARS - 1).replace(/[\uD800-\uDBFF]$/, '').trimEnd()}…` : text
-        attempt = { ...attempt, phase: 'ready', text: brief }; await save(attempt)
-        if (signal.aborted || !markerIsCurrent(editor, marker)) { await save({ ...attempt, phase: 'cancelled' }); return }
-        replaceQuestionMarker(editor, marker, brief, createShapeId(attempt.answerShapeId.slice(6)))
+        attempt = { ...attempt, phase: 'ready', text: brief, question }; await save(attempt)
+        await request.waitForInput()
+        if (signal.aborted || !markerIsCurrent(editor, marker) || !questionContextIsCurrent(editor, request.context)) { await save({ ...attempt, phase: 'cancelled' }); return }
+        request.releaseGuard()
+        replaceQuestionMarker(editor, marker, brief, createShapeId(attempt.answerShapeId.slice(6)), question)
         await flushBoard(); await save({ ...attempt, phase: 'applied' })
       } catch (error) {
         await save({ ...attempt, phase: signal.aborted ? 'cancelled' : 'failed' })
